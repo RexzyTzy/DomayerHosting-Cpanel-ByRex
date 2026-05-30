@@ -20,11 +20,11 @@ import (
 // CONFIG - HARDCODED
 // ============================================================
 const (
-	DBHost     = "157.230.40.102"
+	DBHost     = "160.187.211.168"
 	DBPort     = "3306"
-	DBUser     = "u63_F4OEsPnGIW"
-	DBPassword = "Ncr=pa0a==IsDqXmJyi3d1h3"
-	DBName     = "s63_domayer"
+	DBUser     = "u33_skwR6rpsf3"
+	DBPassword = "aW7nnmGI0^z.H@2TcC.RAn!3"
+	DBName     = "s33_domayer"
 
 	PterodactylURL      = "https://domayer.septacloud.me"
 	PterodactylAdminKey = "ptla_3iotPc2yjpGPLsk0Ap86JRT1FOdKWN8YQzn6Xv1JdCU"
