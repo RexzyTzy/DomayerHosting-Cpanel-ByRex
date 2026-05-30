@@ -1,6 +1,53 @@
 /* ============================================================
    Cpanel DomayerHosting By Ren&Kyz - script.js
+   v2.0 - Loading progress, sidebar fix, responsive
    ============================================================ */
+
+// ========== LOADING PROGRESS BAR ==========
+const Progress = {
+    bar: null,
+    val: 0,
+    timer: null,
+    init() {
+        this.bar = document.getElementById('progress-bar');
+    },
+    start() {
+        if (!this.bar) return;
+        this.val = 0;
+        this.bar.style.opacity = '1';
+        this.bar.style.width = '0%';
+        clearInterval(this.timer);
+        this.timer = setInterval(() => {
+            if (this.val < 85) {
+                this.val += Math.random() * 12;
+                this.bar.style.width = Math.min(this.val, 85) + '%';
+            }
+        }, 150);
+    },
+    done() {
+        if (!this.bar) return;
+        clearInterval(this.timer);
+        this.val = 100;
+        this.bar.style.width = '100%';
+        setTimeout(() => {
+            this.bar.style.opacity = '0';
+            setTimeout(() => { this.bar.style.width = '0%'; }, 300);
+        }, 300);
+    },
+    fail() {
+        if (!this.bar) return;
+        clearInterval(this.timer);
+        this.bar.style.background = 'var(--red)';
+        this.bar.style.width = '100%';
+        setTimeout(() => {
+            this.bar.style.opacity = '0';
+            setTimeout(() => {
+                this.bar.style.width = '0%';
+                this.bar.style.background = '';
+            }, 300);
+        }, 500);
+    }
+};
 
 // ========== SOUND EFFECTS ==========
 const AudioCtx = window.AudioContext || window.webkitAudioContext;
@@ -31,7 +78,6 @@ const SFX = {
     close:   () => playTone(330, 'sine', 0.1, 0.05),
 };
 
-// Attach click sounds globally
 document.addEventListener('click', e => {
     const t = e.target.closest('button, .nav-item, .sidebar-user');
     if (t) SFX.click();
@@ -39,8 +85,9 @@ document.addEventListener('click', e => {
 
 // ========== STATE ==========
 const State = {
-    user: null,      // logged-in panel user
+    user: null,
     sidebarCollapsed: false,
+    mobileSidebarOpen: false,
     currentPage: 'home',
 };
 
@@ -48,6 +95,8 @@ const State = {
 const $ = id => document.getElementById(id);
 const qs = s => document.querySelector(s);
 const qsa = s => document.querySelectorAll(s);
+
+function isMobile() { return window.innerWidth <= 768; }
 
 function api(path, method, body) {
     const opts = { method: method || 'GET', headers: { 'Content-Type': 'application/json' } };
@@ -77,9 +126,10 @@ function confirmDialog(msg, onConfirm) {
 function openModal(id) { SFX.open(); $(id).classList.add('show'); }
 function closeModal(id) { SFX.close(); $(id).classList.remove('show'); }
 
-// Close modal on overlay click
 document.addEventListener('click', e => {
     if (e.target.classList.contains('modal-overlay')) closeModal(e.target.id);
+    // Close mobile sidebar when clicking overlay
+    if (e.target.id === 'sidebar-overlay') closeMobileSidebar();
 });
 
 // ========== AUTH ==========
@@ -91,28 +141,45 @@ function initLogin() {
         const username = $('login-username').value.trim();
         const password = $('login-password').value;
         const err = $('login-error');
+        const btn = $('login-btn');
         err.classList.remove('show');
+
+        // Login loading state
+        btn.disabled = true;
+        btn.innerHTML = '<span class="btn-spinner"></span> Masuk...';
+        Progress.start();
+
         try {
             const res = await api('/login', 'POST', { username, password });
             if (res.ok) {
                 State.user = res.user;
+                Progress.done();
                 SFX.success();
-                showApp();
+                btn.innerHTML = '✓ Berhasil!';
+                setTimeout(() => showApp(), 400);
             } else {
+                Progress.fail();
                 err.textContent = res.error || 'Username atau password salah';
                 err.classList.add('show');
                 SFX.error();
+                btn.disabled = false;
+                btn.innerHTML = '🚀 Masuk ke Panel';
             }
         } catch (ex) {
+            Progress.fail();
             err.textContent = 'Gagal terhubung ke server';
             err.classList.add('show');
             SFX.error();
+            btn.disabled = false;
+            btn.innerHTML = '🚀 Masuk ke Panel';
         }
     });
 }
 
 function logout() {
+    Progress.start();
     api('/logout', 'POST').finally(() => {
+        Progress.done();
         State.user = null;
         location.reload();
     });
@@ -124,6 +191,7 @@ function showApp() {
     $('app').style.display = 'flex';
     renderUserInfo();
     renderSidebar();
+    initSidebarResponsive();
     navigateTo('home');
 }
 
@@ -141,39 +209,119 @@ function renderUserInfo() {
 // ========== SIDEBAR ==========
 function renderSidebar() {
     const isOwner = State.user && State.user.role === 1;
-    // Show/hide owner-only items
     qsa('.owner-only').forEach(el => {
         el.style.display = isOwner ? '' : 'none';
     });
 }
 
-function toggleSidebar() {
-    State.sidebarCollapsed = !State.sidebarCollapsed;
+function initSidebarResponsive() {
+    // Start collapsed on mobile
+    if (isMobile()) {
+        State.sidebarCollapsed = false;
+        State.mobileSidebarOpen = false;
+        applySidebarState();
+    } else {
+        // Desktop: start expanded
+        State.sidebarCollapsed = false;
+        applySidebarState();
+    }
+
+    // Listen for resize
+    window.addEventListener('resize', () => {
+        if (isMobile()) {
+            // On mobile, always use overlay mode
+            const sb = $('sidebar');
+            const mw = $('main-wrapper');
+            const nb = $('navbar');
+            sb.classList.remove('collapsed');
+            mw.classList.remove('collapsed');
+            nb.classList.remove('collapsed');
+            mw.style.marginLeft = '0';
+            nb.style.left = '0';
+            if (!State.mobileSidebarOpen) {
+                sb.classList.remove('mobile-open');
+                $('sidebar-overlay').classList.remove('show');
+            }
+        } else {
+            // Desktop restore
+            $('sidebar-overlay').classList.remove('show');
+            State.mobileSidebarOpen = false;
+            applySidebarState();
+        }
+    });
+}
+
+function applySidebarState() {
     const sb = $('sidebar');
     const mw = $('main-wrapper');
     const nb = $('navbar');
-    sb.classList.toggle('collapsed', State.sidebarCollapsed);
-    mw.classList.toggle('collapsed', State.sidebarCollapsed);
-    nb.classList.toggle('collapsed', State.sidebarCollapsed);
+
+    if (isMobile()) {
+        // Mobile: sidebar is overlay, no margin shift
+        sb.classList.remove('collapsed');
+        mw.style.marginLeft = '0';
+        nb.style.left = '0';
+        if (State.mobileSidebarOpen) {
+            sb.classList.add('mobile-open');
+            $('sidebar-overlay').classList.add('show');
+        } else {
+            sb.classList.remove('mobile-open');
+            $('sidebar-overlay').classList.remove('show');
+        }
+    } else {
+        // Desktop: push layout
+        sb.classList.remove('mobile-open');
+        $('sidebar-overlay').classList.remove('show');
+        mw.style.marginLeft = '';
+        nb.style.left = '';
+        sb.classList.toggle('collapsed', State.sidebarCollapsed);
+        mw.classList.toggle('collapsed', State.sidebarCollapsed);
+        nb.classList.toggle('collapsed', State.sidebarCollapsed);
+    }
 }
+
+function toggleSidebar() {
+    if (isMobile()) {
+        State.mobileSidebarOpen = !State.mobileSidebarOpen;
+        if (State.mobileSidebarOpen) SFX.open(); else SFX.close();
+    } else {
+        State.sidebarCollapsed = !State.sidebarCollapsed;
+        if (State.sidebarCollapsed) SFX.close(); else SFX.open();
+    }
+    applySidebarState();
+}
+
+function closeMobileSidebar() {
+    State.mobileSidebarOpen = false;
+    SFX.close();
+    applySidebarState();
+}
+
+// Close mobile sidebar when nav item clicked
+document.addEventListener('click', e => {
+    if (e.target.closest('.nav-item') && isMobile()) {
+        setTimeout(() => closeMobileSidebar(), 200);
+    }
+});
 
 // ========== NAVIGATION ==========
 function navigateTo(page) {
     SFX.nav();
     State.currentPage = page;
-    // Update active nav item
     qsa('.nav-item').forEach(el => {
         el.classList.toggle('active', el.dataset.page === page);
     });
-    // Show page
     qsa('.page').forEach(el => el.classList.remove('active'));
     const pg = $('page-' + page);
-    if (pg) { pg.classList.add('active'); pg.classList.add('fade-up'); setTimeout(()=>pg.classList.remove('fade-up'),400); }
-    // Load data for page
+    if (pg) {
+        pg.classList.add('active');
+        pg.classList.add('fade-up');
+        setTimeout(() => pg.classList.remove('fade-up'), 400);
+    }
     const loaders = {
         home: loadHome,
-        createAccount: () => loadCreateAccount(),
-        createServer: () => loadCreateServer(),
+        createAccount: loadCreateAccount,
+        createServer: loadCreateServer,
         listUsers: loadListUsers,
         listServers: loadListServers,
         listNests: loadListNests,
@@ -187,6 +335,7 @@ function navigateTo(page) {
 async function loadHome() {
     $('home-loading').style.display = 'flex';
     $('home-stats').style.display = 'none';
+    Progress.start();
     try {
         const res = await api('/stats');
         if (res.ok) {
@@ -197,14 +346,14 @@ async function loadHome() {
             $('stat-nodes').textContent = res.data.nodes;
             $('stat-alloc').textContent = res.data.allocations;
             $('home-stats').style.display = 'grid';
-        }
-    } catch(e) { toast('Gagal memuat statistik panel', 'error'); }
+            Progress.done();
+        } else { Progress.fail(); toast('Gagal memuat statistik panel', 'error'); }
+    } catch(e) { Progress.fail(); toast('Gagal memuat statistik panel', 'error'); }
     $('home-loading').style.display = 'none';
 }
 
 // ========== CREATE ACCOUNT ==========
 async function loadCreateAccount() {
-    // Role select based on logged-in user role
     const roleSelect = $('ca-role');
     if (!roleSelect) return;
     if (State.user.role === 1) {
@@ -221,28 +370,33 @@ async function submitCreateAccount() {
     const lastname = $('ca-lastname').value.trim();
     const password = $('ca-password').value;
     const role = $('ca-role').value;
-
     if (!email || !username || !firstname || !password) {
         toast('Lengkapi semua field yang diperlukan', 'error'); return;
     }
     const btn = $('btn-create-account');
-    btn.disabled = true; btn.textContent = 'Membuat...';
+    btn.disabled = true;
+    btn.innerHTML = '<span class="btn-spinner"></span> Membuat...';
+    Progress.start();
     try {
         const res = await api('/pterodactyl/create-user', 'POST', { email, username, firstname, lastname, password, role: parseInt(role) });
         if (res.ok) {
+            Progress.done();
             toast('Akun berhasil dibuat!', 'success');
             ['ca-email','ca-username','ca-firstname','ca-lastname','ca-password'].forEach(id => $(id).value = '');
         } else {
+            Progress.fail();
             toast('Gagal: ' + (res.error || 'Error tidak diketahui'), 'error');
         }
-    } catch(e) { toast('Gagal terhubung', 'error'); }
-    btn.disabled = false; btn.textContent = '🚀 Buat Akun';
+    } catch(e) { Progress.fail(); toast('Gagal terhubung', 'error'); }
+    btn.disabled = false;
+    btn.innerHTML = '🚀 Buat Akun';
 }
 
 // ========== CREATE SERVER ==========
 async function loadCreateServer() {
-    // Load users, nodes, nests
+    Progress.start();
     await Promise.all([loadCSUsers(), loadCSNodes(), loadCSNests()]);
+    Progress.done();
 }
 
 async function loadCSUsers() {
@@ -275,7 +429,6 @@ async function loadCSNodes() {
         if (res.ok && res.data.length > 0) {
             if (res.data.length === 1) {
                 sel.innerHTML = `<option value="${res.data[0].id}">${res.data[0].name} (Auto)</option>`;
-                $('cs-alloc-loading').textContent = 'Memuat alokasi...';
                 await loadCSAllocations(res.data[0].id);
             } else {
                 sel.innerHTML = '<option value="">-- Pilih Node --</option>' +
@@ -288,12 +441,12 @@ async function loadCSNodes() {
 
 async function loadCSAllocations(nodeId) {
     if (!nodeId) return;
-    const $defAlloc = $('cs-default-alloc');
-    $defAlloc.innerHTML = '<option>Loading...</option>';
+    const defAlloc = $('cs-default-alloc');
+    defAlloc.innerHTML = '<option>Loading...</option>';
     try {
         const res = await api('/pterodactyl/allocations/' + nodeId);
         if (res.ok) {
-            $defAlloc.innerHTML = res.data.map(a => `<option value="${a.id}">${a.ip}:${a.port}</option>`).join('');
+            defAlloc.innerHTML = res.data.map(a => `<option value="${a.id}">${a.ip}:${a.port}</option>`).join('');
             $('cs-alloc-loading').textContent = '';
         }
     } catch(e) {}
@@ -322,14 +475,10 @@ async function loadCSEggs(nestId) {
         if (res.ok) {
             sel.innerHTML = '<option value="">-- Pilih Egg --</option>' +
                 res.data.map(e => `<option value="${e.id}" data-docker="${e.docker_image}" data-startup="${encodeURIComponent(e.startup)}">${e.name}</option>`).join('');
-            // Update server name with egg name
             sel.onchange = function() {
-                const ownUname = $('cs-name').value;
+                const ownUname = $('cs-name').value.split('(')[0].trim();
                 const opt = this.options[this.selectedIndex];
-                if (opt.value) {
-                    const ownerName = ownUname.split('(')[0].trim() || '';
-                    $('cs-name').value = ownerName + '(' + opt.text + ')';
-                }
+                if (opt.value) $('cs-name').value = ownUname + '(' + opt.text + ')';
             };
         }
     } catch(e) {}
@@ -356,23 +505,20 @@ async function submitCreateServer() {
     const eggOpt = $('cs-egg').options[$('cs-egg').selectedIndex];
     const dockerImage = eggOpt ? eggOpt.dataset.docker : '';
     const startup = eggOpt ? decodeURIComponent(eggOpt.dataset.startup || '') : '';
-    const ownerEmail = (() => {
-        const opt = $('cs-owner').options[$('cs-owner').selectedIndex];
-        if (!opt) return '';
-        try { const u = JSON.parse(opt.dataset.user||'{}'); return u.email||''; } catch(e) { return ''; }
-    })();
-    const ownerUname = (() => {
-        const opt = $('cs-owner').options[$('cs-owner').selectedIndex];
-        if (!opt) return '';
-        try { const u = JSON.parse(opt.dataset.user||'{}'); return u.username||''; } catch(e) { return ''; }
-    })();
+    const ownerOpt = $('cs-owner').options[$('cs-owner').selectedIndex];
+    let ownerEmail = '', ownerUname = '';
+    if (ownerOpt && ownerOpt.dataset.user) {
+        try { const u = JSON.parse(ownerOpt.dataset.user); ownerEmail = u.email||''; ownerUname = u.username||''; } catch(e) {}
+    }
 
     if (!ownerId || !serverName || !nodeId || !allocId || !nestId || !eggId || !phone) {
         toast('Lengkapi semua field yang diperlukan termasuk nomor WA buyer', 'error'); return;
     }
 
     const btn = $('btn-create-server');
-    btn.disabled = true; btn.textContent = 'Membuat Server...';
+    btn.disabled = true;
+    btn.innerHTML = '<span class="btn-spinner"></span> Membuat Server...';
+    Progress.start();
     try {
         const res = await api('/pterodactyl/create-server', 'POST', {
             name: serverName, owner_id: parseInt(ownerId),
@@ -386,30 +532,38 @@ async function submitCreateServer() {
             owner_password: ownerPass, egg_name: eggOpt ? eggOpt.text : '',
         });
         if (res.ok) {
+            Progress.done();
             toast('Server berhasil dibuat & pesan WA terkirim!', 'success');
         } else {
+            Progress.fail();
             toast('Gagal: ' + (res.error || 'Error tidak diketahui'), 'error');
         }
-    } catch(e) { toast('Gagal terhubung', 'error'); }
-    btn.disabled = false; btn.textContent = '🚀 Buat Server & Kirim WA';
+    } catch(e) { Progress.fail(); toast('Gagal terhubung', 'error'); }
+    btn.disabled = false;
+    btn.innerHTML = '🚀 Buat Server & Kirim WA';
 }
 
 // ========== LIST USERS ==========
+let cachedUsers = [];
+
 async function loadListUsers() {
-    $('lu-table-body').innerHTML = `<tr><td colspan="5" class="text-center p-6"><div class="page-loader"><div class="spinner"></div></div></td></tr>`;
+    $('lu-table-body').innerHTML = `<tr><td colspan="5"><div class="page-loader"><div class="spinner"></div></div></td></tr>`;
+    Progress.start();
     try {
         const res = await api('/pterodactyl/users');
-        if (res.ok) renderUsersTable(res.data);
-        else toast('Gagal memuat users', 'error');
-    } catch(e) { toast('Gagal terhubung', 'error'); }
+        if (res.ok) {
+            cachedUsers = res.data;
+            renderUsersTable(res.data);
+            Progress.done();
+        } else { Progress.fail(); toast('Gagal memuat users', 'error'); }
+    } catch(e) { Progress.fail(); toast('Gagal terhubung', 'error'); }
 }
 
 function renderUsersTable(users) {
     const isOwner = State.user && State.user.role === 1;
-    const search = ($('lu-search').value || '').toLowerCase();
+    const search = ($('lu-search') ? $('lu-search').value : '').toLowerCase();
     const filtered = users.filter(u =>
-        u.username.toLowerCase().includes(search) ||
-        u.email.toLowerCase().includes(search)
+        u.username.toLowerCase().includes(search) || u.email.toLowerCase().includes(search)
     );
     if (!filtered.length) {
         $('lu-table-body').innerHTML = `<tr><td colspan="5"><div class="empty-state"><div class="empty-icon">👥</div><p>Tidak ada user ditemukan</p></div></td></tr>`;
@@ -424,17 +578,6 @@ function renderUsersTable(users) {
         <td>${isOwner ? `<button class="btn-sm btn-edit" onclick="openEditUser(${u.id},'${u.email}','${u.username}',${u.root_admin?1:0})">✏ Edit</button>
             <button class="btn-sm btn-del" onclick="deleteUser(${u.id},'${u.username}')">🗑 Hapus</button>` : '-'}</td>
     </tr>`).join('');
-}
-
-let cachedUsers = [];
-document.addEventListener('DOMContentLoaded', () => {
-    const s = $('lu-search');
-    if (s) s.addEventListener('input', () => renderUsersTable(cachedUsers));
-});
-
-async function loadListUsersWithCache() {
-    const res = await api('/pterodactyl/users');
-    if (res.ok) { cachedUsers = res.data; renderUsersTable(res.data); }
 }
 
 function openEditUser(id, email, username, role) {
@@ -454,35 +597,41 @@ async function submitEditUser() {
     const role = parseInt($('eu-role').value);
     const btn = $('btn-edit-user');
     btn.disabled = true;
+    btn.innerHTML = '<span class="btn-spinner"></span> Menyimpan...';
+    Progress.start();
     try {
         const body = { email, username, role };
         if (password) body.password = password;
         const res = await api('/pterodactyl/users/' + id, 'PATCH', body);
         if (res.ok) {
+            Progress.done();
             toast('User berhasil diupdate!', 'success');
             closeModal('edit-user-modal');
             loadListUsers();
-        } else { toast('Gagal: ' + (res.error || 'Error'), 'error'); }
-    } catch(e) { toast('Gagal terhubung', 'error'); }
+        } else { Progress.fail(); toast('Gagal: ' + (res.error || 'Error'), 'error'); }
+    } catch(e) { Progress.fail(); toast('Gagal terhubung', 'error'); }
     btn.disabled = false;
+    btn.innerHTML = '💾 Simpan';
 }
 
 function deleteUser(id, username) {
     confirmDialog(`Hapus user "${username}" dari panel Pterodactyl?`, async () => {
+        Progress.start();
         const res = await api('/pterodactyl/users/' + id, 'DELETE');
-        if (res.ok) { toast('User dihapus!', 'success'); loadListUsers(); }
-        else toast('Gagal: ' + (res.error||'Error'), 'error');
+        if (res.ok) { Progress.done(); toast('User dihapus!', 'success'); loadListUsers(); }
+        else { Progress.fail(); toast('Gagal: ' + (res.error||'Error'), 'error'); }
     });
 }
 
 // ========== LIST SERVERS ==========
 async function loadListServers() {
-    $('ls-table-body').innerHTML = `<tr><td colspan="4" class="text-center p-6"><div class="page-loader"><div class="spinner"></div></div></td></tr>`;
+    $('ls-table-body').innerHTML = `<tr><td colspan="4"><div class="page-loader"><div class="spinner"></div></div></td></tr>`;
+    Progress.start();
     try {
         const res = await api('/pterodactyl/servers');
-        if (res.ok) renderServersTable(res.data);
-        else toast('Gagal memuat servers', 'error');
-    } catch(e) { toast('Gagal terhubung', 'error'); }
+        if (res.ok) { renderServersTable(res.data); Progress.done(); }
+        else { Progress.fail(); toast('Gagal memuat servers', 'error'); }
+    } catch(e) { Progress.fail(); toast('Gagal terhubung', 'error'); }
 }
 
 function renderServersTable(servers) {
@@ -493,11 +642,10 @@ function renderServersTable(servers) {
     }
     $('ls-table-body').innerHTML = servers.map(s => {
         const status = s.status === 'running' ? 'badge-green' : (s.status === 'offline' ? 'badge-red' : 'badge-blue');
-        const statusLabel = s.status || 'installing';
         return `<tr>
             <td>${s.name}</td>
             <td>${s.user || s.owner || '-'}</td>
-            <td><span class="badge ${status}">${statusLabel}</span></td>
+            <td><span class="badge ${status}">${s.status || 'installing'}</span></td>
             <td>${isOwner ? `<button class="btn-sm btn-del" onclick="deleteServer('${s.identifier}','${s.name}')">🗑 Hapus</button>` : '-'}</td>
         </tr>`;
     }).join('');
@@ -505,21 +653,23 @@ function renderServersTable(servers) {
 
 function deleteServer(identifier, name) {
     confirmDialog(`Hapus server "${name}" dari panel?`, async () => {
+        Progress.start();
         const res = await api('/pterodactyl/servers/' + identifier, 'DELETE');
-        if (res.ok) { toast('Server dihapus!', 'success'); loadListServers(); }
-        else toast('Gagal: ' + (res.error||'Error'), 'error');
+        if (res.ok) { Progress.done(); toast('Server dihapus!', 'success'); loadListServers(); }
+        else { Progress.fail(); toast('Gagal: ' + (res.error||'Error'), 'error'); }
     });
 }
 
 // ========== LIST NESTS ==========
 async function loadListNests() {
     $('ln-table-body').innerHTML = `<tr><td colspan="4"><div class="page-loader"><div class="spinner"></div></div></td></tr>`;
+    Progress.start();
     try {
         const res = await api('/pterodactyl/nests');
-        if (!res.ok) { toast('Gagal memuat nests', 'error'); return; }
+        if (!res.ok) { Progress.fail(); toast('Gagal memuat nests', 'error'); return; }
         if (!res.data.length) {
             $('ln-table-body').innerHTML = `<tr><td colspan="4"><div class="empty-state"><div class="empty-icon">🥚</div><p>Tidak ada nest</p></div></td></tr>`;
-            return;
+            Progress.done(); return;
         }
         $('ln-table-body').innerHTML = res.data.map(n => `<tr>
             <td>${n.id}</td>
@@ -527,18 +677,20 @@ async function loadListNests() {
             <td>${n.description || '-'}</td>
             <td><span class="badge badge-cyan">${n.egg_count || 0} eggs</span></td>
         </tr>`).join('');
-    } catch(e) { toast('Gagal terhubung', 'error'); }
+        Progress.done();
+    } catch(e) { Progress.fail(); toast('Gagal terhubung', 'error'); }
 }
 
-// ========== ADD ACCOUNT (Panel Login) ==========
-async function loadAddAccount() {
-    loadPanelAccounts();
-}
+// ========== ADD ACCOUNT ==========
+async function loadAddAccount() { loadPanelAccounts(); }
 
 async function loadPanelAccounts() {
-    const res = await api('/panel-accounts');
     const tbody = $('pa-table-body');
-    if (!res.ok) { tbody.innerHTML = '<tr><td colspan="4">Gagal memuat</td></tr>'; return; }
+    tbody.innerHTML = `<tr><td colspan="4"><div class="page-loader"><div class="spinner"></div></div></td></tr>`;
+    Progress.start();
+    const res = await api('/panel-accounts');
+    if (!res.ok) { Progress.fail(); tbody.innerHTML = '<tr><td colspan="4">Gagal memuat</td></tr>'; return; }
+    Progress.done();
     if (!res.data.length) {
         tbody.innerHTML = `<tr><td colspan="4"><div class="empty-state"><div class="empty-icon">👤</div><p>Belum ada akun panel</p></div></td></tr>`;
         return;
@@ -561,13 +713,17 @@ async function submitAddPanelAccount() {
     if (!username || !password) { toast('Username dan password wajib diisi', 'error'); return; }
     const btn = $('btn-add-panel-acc');
     btn.disabled = true;
+    btn.innerHTML = '<span class="btn-spinner"></span> Menambah...';
+    Progress.start();
     const res = await api('/panel-accounts', 'POST', { username, password, role });
     if (res.ok) {
+        Progress.done();
         toast('Akun panel ditambahkan!', 'success');
         $('pa-username').value = ''; $('pa-password').value = '';
         loadPanelAccounts();
-    } else toast('Gagal: ' + (res.error||'Error'), 'error');
+    } else { Progress.fail(); toast('Gagal: ' + (res.error||'Error'), 'error'); }
     btn.disabled = false;
+    btn.innerHTML = '➕ Tambah Akun';
 }
 
 function openEditPanelUser(id, username, role) {
@@ -585,30 +741,34 @@ async function submitEditPanelUser() {
     const role = parseInt($('ep-role').value);
     const body = { username, role };
     if (password) body.password = password;
+    Progress.start();
     const res = await api('/panel-accounts/' + id, 'PATCH', body);
     if (res.ok) {
+        Progress.done();
         toast('Akun panel diupdate!', 'success');
         closeModal('edit-panel-user-modal');
         loadPanelAccounts();
-    } else toast('Gagal: ' + (res.error||'Error'), 'error');
+    } else { Progress.fail(); toast('Gagal: ' + (res.error||'Error'), 'error'); }
 }
 
 function deletePanelUser(id, username) {
     confirmDialog(`Hapus akun panel "${username}"?`, async () => {
+        Progress.start();
         const res = await api('/panel-accounts/' + id, 'DELETE');
-        if (res.ok) { toast('Akun dihapus!', 'success'); loadPanelAccounts(); }
-        else toast('Gagal', 'error');
+        if (res.ok) { Progress.done(); toast('Akun dihapus!', 'success'); loadPanelAccounts(); }
+        else { Progress.fail(); toast('Gagal', 'error'); }
     });
 }
 
 // ========== ACTIVITY LOG ==========
 async function loadActivityLog() {
     $('al-table-body').innerHTML = `<tr><td colspan="4"><div class="page-loader"><div class="spinner"></div></div></td></tr>`;
+    Progress.start();
     try {
         const res = await api('/logs');
-        if (res.ok) renderLogs(res.data);
-        else toast('Gagal memuat log', 'error');
-    } catch(e) { toast('Gagal terhubung', 'error'); }
+        if (res.ok) { renderLogs(res.data); Progress.done(); }
+        else { Progress.fail(); toast('Gagal memuat log', 'error'); }
+    } catch(e) { Progress.fail(); toast('Gagal terhubung', 'error'); }
 }
 
 function renderLogs(logs) {
@@ -626,20 +786,31 @@ function renderLogs(logs) {
 
 async function clearActivityLog() {
     confirmDialog('Hapus semua activity log? Tindakan ini tidak dapat dibatalkan.', async () => {
+        Progress.start();
         const res = await api('/logs/clear', 'DELETE');
-        if (res.ok) { toast('Log dibersihkan!', 'success'); loadActivityLog(); }
-        else toast('Gagal', 'error');
+        if (res.ok) { Progress.done(); toast('Log dibersihkan!', 'success'); loadActivityLog(); }
+        else { Progress.fail(); toast('Gagal', 'error'); }
     });
 }
 
+// ========== SEARCH ==========
+document.addEventListener('DOMContentLoaded', () => {
+    const s = $('lu-search');
+    if (s) s.addEventListener('input', () => renderUsersTable(cachedUsers));
+});
+
 // ========== INIT ==========
 document.addEventListener('DOMContentLoaded', () => {
+    Progress.init();
     initLogin();
-    // Check session
+    Progress.start();
     api('/me').then(res => {
         if (res.ok && res.user) {
             State.user = res.user;
+            Progress.done();
             showApp();
+        } else {
+            Progress.done();
         }
-    }).catch(() => {});
+    }).catch(() => Progress.done());
 });

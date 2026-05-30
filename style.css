@@ -81,6 +81,21 @@ ul { list-style: none; }
     100% { transform: translate(30px,40px) scale(1.1); }
 }
 
+
+/* ========== PROGRESS BAR ========== */
+#progress-bar {
+    position: fixed;
+    top: 0; left: 0;
+    height: 3px;
+    width: 0%;
+    background: linear-gradient(90deg, var(--cyan), var(--pink), var(--blue));
+    z-index: 9999;
+    opacity: 0;
+    transition: width 0.2s ease, opacity 0.3s ease;
+    box-shadow: 0 0 10px var(--cyan);
+    border-radius: 0 2px 2px 0;
+}
+
 /* ========== LOGIN PAGE ========== */
 .login-page {
     display: flex; justify-content: center; align-items: center;
@@ -652,6 +667,19 @@ tbody td { padding: 12px 14px; color: var(--text-primary); }
 .modal-body { padding: 20px 24px 24px; }
 .modal-wide { max-width: 750px; }
 
+
+/* ========== BUTTON SPINNER ========== */
+.btn-spinner {
+    display: inline-block;
+    width: 14px; height: 14px;
+    border: 2px solid rgba(255,255,255,0.3);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    vertical-align: middle;
+    margin-right: 4px;
+}
+
 /* ========== LOADING / SPINNER ========== */
 .spinner {
     width: 36px; height: 36px;
@@ -730,19 +758,103 @@ tbody td { padding: 12px 14px; color: var(--text-primary); }
 /* ========== ACTIVITY LOG ========== */
 .log-time { color: var(--text-muted); font-size: 0.75rem; }
 
+
+/* ========== SIDEBAR MOBILE OVERLAY ========== */
+#sidebar-overlay {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.6);
+    backdrop-filter: blur(2px);
+    z-index: 49;
+}
+#sidebar-overlay.show { display: block; }
+
+.sidebar.mobile-open {
+    transform: translateX(0) !important;
+}
+
 /* ========== RESPONSIVE ========== */
+
+/* Tablet */
+@media (max-width: 1024px) {
+    .stats-grid { grid-template-columns: repeat(3, 1fr); }
+}
+
+/* Tablet kecil */
 @media (max-width: 900px) {
     .form-grid { grid-template-columns: 1fr; }
     .form-group.full { grid-column: 1; }
     .stats-grid { grid-template-columns: 1fr 1fr; }
+    .navbar-user .nb-name,
+    .navbar-user .nb-role { display: none; }
 }
-@media (max-width: 640px) {
-    .main-wrapper { padding: 16px; }
-    .sidebar { width: var(--sidebar-w-col) !important; }
+
+/* Mobile */
+@media (max-width: 768px) {
+    /* Sidebar: slide in dari kiri sebagai overlay */
+    .sidebar {
+        transform: translateX(-100%);
+        transition: transform var(--transition);
+        z-index: 50;
+        width: var(--sidebar-w) !important;
+    }
     .sidebar .sidebar-brand,
     .sidebar .nav-label,
-    .sidebar .user-info { width: 0; opacity: 0; }
-    .navbar { left: var(--sidebar-w-col) !important; }
-    .main-wrapper { margin-left: var(--sidebar-w-col) !important; }
+    .sidebar .user-info {
+        width: auto !important;
+        opacity: 1 !important;
+    }
+    .sidebar.collapsed {
+        width: var(--sidebar-w) !important;
+    }
+
+    /* Navbar & main tidak tergeser, penuh 100% */
+    .navbar {
+        left: 0 !important;
+        right: 0;
+        padding: 0 14px;
+    }
+    .main-wrapper {
+        margin-left: 0 !important;
+        padding: 14px;
+    }
+    .main-wrapper.collapsed {
+        margin-left: 0 !important;
+    }
+
+    /* Stats 1 kolom */
+    .stats-grid { grid-template-columns: 1fr 1fr; gap: 10px; }
+
+    /* Sembunyikan label di navbar */
+    .navbar-user { padding: 5px 8px; }
+    .logout-btn span { display: none; }
+
+    /* Section header stack */
+    .section-header { flex-direction: column; align-items: flex-start; gap: 10px; }
+    .section-header > div { width: 100%; }
+
+    /* Table scroll horizontal */
+    .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    table { min-width: 500px; }
+
+    /* Modal full width */
+    .modal { width: 95%; margin: 10px; }
+    .modal-wide { max-width: 95%; }
+
+    /* Login card */
+    .login-card { width: 92%; padding: 32px 22px; }
+
+    /* Toast bottom center */
+    .toast-container { right: 12px; left: 12px; bottom: 16px; }
+    .toast { min-width: unset; width: 100%; }
+}
+
+/* Mobile kecil */
+@media (max-width: 480px) {
     .stats-grid { grid-template-columns: 1fr; }
+    .navbar-title { font-size: 0.9rem; }
+    .form-actions { flex-direction: column; }
+    .form-actions .btn { width: 100%; justify-content: center; }
+    .btn-sm { font-size: 0.7rem; padding: 4px 8px; }
+    .nb-avatar { width: 26px; height: 26px; font-size: 0.65rem; }
 }

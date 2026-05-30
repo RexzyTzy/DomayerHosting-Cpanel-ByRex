@@ -1269,6 +1269,9 @@ func htmlPage() string {
 </head>
 <body>
 
+<!-- Progress Bar -->
+<div id="progress-bar"></div>
+
 <!-- Ambient Background -->
 <div class="bg-ambient">
   <div class="circle c1"></div>
@@ -1292,7 +1295,7 @@ func htmlPage() string {
         <label for="login-password">Password</label>
         <input id="login-password" type="password" placeholder="Masukkan password" required autocomplete="current-password">
       </div>
-      <button type="submit" class="login-btn">🚀 Masuk ke Panel</button>
+      <button type="submit" id="login-btn" class="login-btn">🚀 Masuk ke Panel</button>
     </form>
   </div>
 </div>
@@ -1809,6 +1812,8 @@ func htmlPage() string {
     </div>
 
   </main><!-- end main-wrapper -->
+<!-- Sidebar Overlay (mobile) -->
+<div id="sidebar-overlay"></div>
 </div><!-- end #app -->
 
 <!-- ======== MODALS ======== -->
