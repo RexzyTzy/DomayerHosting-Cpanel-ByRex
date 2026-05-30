@@ -1,10 +1,8 @@
 [build]
-builder = "NIXPACKS"
-buildCommand = "go mod download && go build -o server index.go"
+builder = "nixpacks"
+buildCommand = "go build -o server ."
 
 [deploy]
 startCommand = "./server"
-healthcheckPath = "/health"
-healthcheckTimeout = 60
-restartPolicyType = "ON_FAILURE"
+restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 3
