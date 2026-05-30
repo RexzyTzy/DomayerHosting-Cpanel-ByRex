@@ -1440,7 +1440,7 @@ func checkAndDeleteExpired() {
 		}
 		// Notify buyer server deleted
 		if e.Phone != "" {
-			msg := fmt.Sprintf("❌ *SERVER DIHAPUS*
+			msg := fmt.Sprintf("❌*SERVER DIHAPUS*
 
 _Server *%s* milik %s telah dihapus karena masa aktif habis._
 
