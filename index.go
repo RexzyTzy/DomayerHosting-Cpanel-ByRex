@@ -31,8 +31,8 @@ const (
 	PterodactylUserKey  = "ptlc_GdtcgltLHzPehw8LrOQKgJNe7kFXDgzjtwIlX8X5Huf"
 
 	FonnteAPIKey  = "WSutCwy53viwdyH8gwqE"
-	PanelLink     = "https://reshhus.myserverr.web.id"
-	PanelPMALink  = "https://reshhus.myserverr.web.id/pma"
+	PanelLink     = "https://domayer.septacloud.me"
+	PanelPMALink  = "https://domayer.septacloud.me/pma"
 
 	SessionCookieName = "domayer_session"
 	SessionMaxAge     = 86400 * 7 // 7 days
