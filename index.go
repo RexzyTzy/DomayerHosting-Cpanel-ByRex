@@ -66,20 +66,50 @@ type LogEntry struct {
 // DATABASE INIT
 // ============================================================
 func initDB() {
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true&charset=utf8mb4",
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true&charset=utf8mb4&timeout=10s&readTimeout=10s&writeTimeout=10s",
 		DBUser, DBPassword, DBHost, DBPort, DBName)
 	var err error
 	db, err = sql.Open("mysql", dsn)
 	if err != nil {
-		log.Fatalf("DB open error: %v", err)
+		log.Printf("⚠ DB open error: %v — will retry in background", err)
+		go retryDB(dsn)
+		return
 	}
 	db.SetMaxOpenConns(10)
 	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(5 * time.Minute)
 	if err = db.Ping(); err != nil {
-		log.Fatalf("DB ping error: %v", err)
+		log.Printf("⚠ DB ping error: %v — will retry in background", err)
+		go retryDB(dsn)
+		return
 	}
 	log.Println("✅ Database connected")
 	autoMigrate()
+}
+
+func retryDB(dsn string) {
+	for i := 1; i <= 10; i++ {
+		time.Sleep(time.Duration(i*3) * time.Second)
+		log.Printf("🔄 Retrying DB connection (attempt %d/10)...", i)
+		conn, err := sql.Open("mysql", dsn)
+		if err != nil {
+			log.Printf("⚠ Retry %d failed: %v", i, err)
+			continue
+		}
+		conn.SetMaxOpenConns(10)
+		conn.SetMaxIdleConns(5)
+		conn.SetConnMaxLifetime(5 * time.Minute)
+		if err = conn.Ping(); err != nil {
+			log.Printf("⚠ Retry %d ping failed: %v", i, err)
+			conn.Close()
+			continue
+		}
+		db = conn
+		log.Println("✅ Database connected (retry success)")
+		autoMigrate()
+		return
+	}
+	log.Println("❌ All DB retry attempts failed. Running without database.")
 }
 
 func autoMigrate() {
@@ -146,6 +176,9 @@ func getSession(r *http.Request) *PanelUser {
 	if !ok {
 		return nil
 	}
+	if db == nil {
+		return nil
+	}
 	var u PanelUser
 	err = db.QueryRow("SELECT id, username, role FROM users WHERE username=?", username).Scan(&u.ID, &u.Username, &u.Role)
 	if err != nil {
@@ -175,8 +208,23 @@ func requireOwner(w http.ResponseWriter, r *http.Request) *PanelUser {
 }
 
 func writeLog(username string, role int, logMsg string) {
+	if db == nil {
+		return
+	}
 	t := time.Now().Format("15:04 02/01/2006")
 	db.Exec("INSERT INTO logs (users, role, log, time) VALUES (?,?,?,?)", username, role, logMsg, t)
+}
+
+func handleHealth(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	dbStatus := "connected"
+	if db == nil {
+		dbStatus = "connecting..."
+	} else if err := db.Ping(); err != nil {
+		dbStatus = "reconnecting..."
+	}
+	fmt.Fprintf(w, `{"ok":true,"status":"running","db":"%s"}`, dbStatus)
 }
 
 func generateToken() string {
@@ -305,6 +353,9 @@ func main() {
 		http.ServeFile(w, r, "script.js")
 	})
 
+	// Health check
+	mux.HandleFunc("/health", handleHealth)
+
 	// Auth
 	mux.HandleFunc("/api/login", handleLogin)
 	mux.HandleFunc("/api/logout", handleLogout)
@@ -369,6 +420,10 @@ func corsMiddleware(next http.Handler) http.Handler {
 func handleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		errResp(w, 405, "Method not allowed")
+		return
+	}
+	if db == nil {
+		errResp(w, 503, "Database sedang menghubungkan, coba lagi dalam beberapa detik")
 		return
 	}
 	var body struct {
@@ -1055,6 +1110,10 @@ func handlePanelAccounts(w http.ResponseWriter, r *http.Request) {
 	if u == nil {
 		return
 	}
+	if db == nil {
+		errResp(w, 503, "Database tidak tersedia")
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
 		rows, err := db.Query("SELECT id, username, role FROM users ORDER BY id")
@@ -1160,6 +1219,10 @@ func handlePanelAccountByID(w http.ResponseWriter, r *http.Request) {
 func handleLogs(w http.ResponseWriter, r *http.Request) {
 	u := requireOwner(w, r)
 	if u == nil {
+		return
+	}
+	if db == nil {
+		errResp(w, 503, "Database tidak tersedia")
 		return
 	}
 	rows, err := db.Query("SELECT users, role, log, time FROM logs ORDER BY id DESC LIMIT 200")
