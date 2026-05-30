@@ -325,6 +325,7 @@ function navigateTo(page) {
         listUsers: loadListUsers,
         listServers: loadListServers,
         listNests: loadListNests,
+        renewHosting: loadRenewHosting,
         addAccount: loadAddAccount,
         activityLog: loadActivityLog,
     };
@@ -337,19 +338,49 @@ async function loadHome() {
     $('home-stats').style.display = 'none';
     Progress.start();
     try {
-        const res = await api('/stats');
-        if (res.ok) {
-            $('stat-users').textContent = res.data.users;
-            $('stat-servers').textContent = res.data.servers;
-            $('stat-nests').textContent = res.data.nests;
-            $('stat-eggs').textContent = res.data.eggs;
-            $('stat-nodes').textContent = res.data.nodes;
-            $('stat-alloc').textContent = res.data.allocations;
+        const [statsRes, expRes] = await Promise.all([
+            api('/stats'),
+            api('/expirations'),
+        ]);
+        if (statsRes.ok) {
+            $('stat-users').textContent = statsRes.data.users;
+            $('stat-servers').textContent = statsRes.data.servers;
+            $('stat-nests').textContent = statsRes.data.nests;
+            $('stat-eggs').textContent = statsRes.data.eggs;
+            $('stat-nodes').textContent = statsRes.data.nodes;
+            $('stat-alloc').textContent = statsRes.data.allocations;
             $('home-stats').style.display = 'grid';
-            Progress.done();
-        } else { Progress.fail(); toast('Gagal memuat statistik panel', 'error'); }
+        }
+        if (expRes.ok) renderExpirationTable(expRes.data);
+        Progress.done();
     } catch(e) { Progress.fail(); toast('Gagal memuat statistik panel', 'error'); }
     $('home-loading').style.display = 'none';
+}
+
+function renderExpirationTable(data) {
+    const tbody = $('exp-table-body');
+    if (!tbody) return;
+    if (!data || !data.length) {
+        tbody.innerHTML = `<tr><td colspan="4"><div class="empty-state"><div class="empty-icon">⏰</div><p>Tidak ada server dengan expired</p></div></td></tr>`;
+        return;
+    }
+    const now = new Date();
+    tbody.innerHTML = data.map(e => {
+        // Parse dd/mm/yyyy hh:mm
+        const parts = e.expire_at.split(' ');
+        const dmy = parts[0].split('/');
+        const hm = (parts[1]||'00:00').split(':');
+        const expDate = new Date(dmy[2], dmy[1]-1, dmy[0], hm[0], hm[1]);
+        const diff = Math.ceil((expDate - now) / (1000*60*60*24));
+        const badge = diff <= 1 ? 'badge-red' : diff <= 3 ? 'badge-yellow' : 'badge-green';
+        const label = diff < 0 ? 'Expired!' : diff === 0 ? 'Hari ini' : diff + ' hari lagi';
+        return `<tr>
+            <td>${e.server_name}</td>
+            <td>${e.owner_username || '-'}</td>
+            <td>${e.expire_at}</td>
+            <td><span class="badge ${badge}">${label}</span></td>
+        </tr>`;
+    }).join('');
 }
 
 // ========== CREATE ACCOUNT ==========
@@ -502,6 +533,7 @@ async function submitCreateServer() {
     const backupLimit = parseInt($('cs-backup-limit').value);
     const allocLimit = parseInt($('cs-alloc-limit').value);
     const phone = $('cs-phone').value.trim();
+    const expiredDays = parseInt($('cs-expired-days').value) || 0;
     const eggOpt = $('cs-egg').options[$('cs-egg').selectedIndex];
     const dockerImage = eggOpt ? eggOpt.dataset.docker : '';
     const startup = eggOpt ? decodeURIComponent(eggOpt.dataset.startup || '') : '';
@@ -530,6 +562,7 @@ async function submitCreateServer() {
             docker_image: dockerImage, startup,
             phone, owner_email: ownerEmail, owner_username: ownerUname,
             owner_password: ownerPass, egg_name: eggOpt ? eggOpt.text : '',
+            expired_days: expiredDays,
         });
         if (res.ok) {
             Progress.done();
@@ -643,10 +676,14 @@ function renderServersTable(servers) {
     $('ls-table-body').innerHTML = servers.map(s => {
         const status = s.status === 'running' ? 'badge-green' : (s.status === 'offline' ? 'badge-red' : 'badge-blue');
         return `<tr>
-            <td>${s.name}</td>
+            <td><span style="cursor:pointer;color:var(--cyan)" onclick="openServerDetail('${s.identifier}')">${s.name}</span></td>
             <td>${s.user || s.owner || '-'}</td>
             <td><span class="badge ${status}">${s.status || 'installing'}</span></td>
-            <td>${isOwner ? `<button class="btn-sm btn-del" onclick="deleteServer('${s.identifier}','${s.name}')">🗑 Hapus</button>` : '-'}</td>
+            <td style="display:flex;gap:5px;flex-wrap:wrap">
+              <button class="btn-sm btn-edit" onclick="openServerDetail('${s.identifier}')">🔍 Detail</button>
+              <button class="btn-sm" style="background:rgba(168,85,247,0.1);color:var(--purple);border:1px solid rgba(168,85,247,0.25)" onclick="reinstallServer('${s.identifier}','${s.name}')">🔄 Reinstall</button>
+              ${isOwner ? `<button class="btn-sm btn-del" onclick="deleteServer('${s.identifier}','${s.name}')">🗑 Hapus</button>` : ''}
+            </td>
         </tr>`;
     }).join('');
 }
@@ -814,3 +851,168 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }).catch(() => Progress.done());
 });
+
+// ========== SERVER DETAIL ==========
+async function openServerDetail(identifier) {
+    openModal('server-detail-modal');
+    $('server-detail-body').innerHTML = '<div class="page-loader"><div class="spinner"></div></div>';
+    Progress.start();
+    try {
+        const res = await api('/pterodactyl/server-detail/' + identifier);
+        if (res.ok) {
+            Progress.done();
+            const d = res.data;
+            const statusBadge = d.status === 'running' ? 'badge-green' : d.status === 'offline' ? 'badge-red' : 'badge-blue';
+            const memGB = (d.memory / 1024).toFixed(1);
+            const diskGB = (d.disk / 1024).toFixed(1);
+            $('server-detail-body').innerHTML = `
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;font-size:0.87rem">
+              <div class="card" style="padding:14px">
+                <div style="color:var(--text-secondary);font-size:0.72rem;margin-bottom:4px">SERVER NAME</div>
+                <div style="font-weight:700;color:var(--cyan)">${d.name}</div>
+              </div>
+              <div class="card" style="padding:14px">
+                <div style="color:var(--text-secondary);font-size:0.72rem;margin-bottom:4px">STATUS</div>
+                <span class="badge ${statusBadge}">${d.status || 'installing'}</span>
+              </div>
+              <div class="card" style="padding:14px">
+                <div style="color:var(--text-secondary);font-size:0.72rem;margin-bottom:4px">IP : PORT</div>
+                <div style="font-weight:600">${d.ip || '-'}:${d.port || '-'}</div>
+              </div>
+              <div class="card" style="padding:14px">
+                <div style="color:var(--text-secondary);font-size:0.72rem;margin-bottom:4px">EGG / NEST</div>
+                <div style="font-weight:600">${d.egg || '-'} <span style="color:var(--text-muted)">/ ${d.nest || '-'}</span></div>
+              </div>
+              <div class="card" style="padding:14px">
+                <div style="color:var(--text-secondary);font-size:0.72rem;margin-bottom:4px">MEMORY</div>
+                <div style="font-weight:700;color:var(--blue)">${memGB} GB</div>
+              </div>
+              <div class="card" style="padding:14px">
+                <div style="color:var(--text-secondary);font-size:0.72rem;margin-bottom:4px">DISK</div>
+                <div style="font-weight:700;color:var(--purple)">${diskGB} GB</div>
+              </div>
+              <div class="card" style="padding:14px">
+                <div style="color:var(--text-secondary);font-size:0.72rem;margin-bottom:4px">CPU LIMIT</div>
+                <div style="font-weight:700;color:var(--pink)">${d.cpu}%</div>
+              </div>
+              <div class="card" style="padding:14px">
+                <div style="color:var(--text-secondary);font-size:0.72rem;margin-bottom:4px">EXPIRED</div>
+                <div style="font-weight:600;color:${d.expire_at ? 'var(--yellow)' : 'var(--green)'}">${d.expire_at || '♾ Permanen'}</div>
+              </div>
+              <div class="card" style="padding:14px">
+                <div style="color:var(--text-secondary);font-size:0.72rem;margin-bottom:4px">DATABASE LIMIT</div>
+                <div>${d.db_limit}</div>
+              </div>
+              <div class="card" style="padding:14px">
+                <div style="color:var(--text-secondary);font-size:0.72rem;margin-bottom:4px">BACKUP LIMIT</div>
+                <div>${d.backup_limit}</div>
+              </div>
+              ${d.description ? `<div class="card" style="padding:14px;grid-column:1/-1">
+                <div style="color:var(--text-secondary);font-size:0.72rem;margin-bottom:4px">DESKRIPSI</div>
+                <div>${d.description}</div>
+              </div>` : ''}
+            </div>
+            <div style="display:flex;gap:10px;margin-top:16px;justify-content:flex-end">
+              <button class="btn btn-secondary" style="background:rgba(168,85,247,0.1);color:var(--purple);border-color:rgba(168,85,247,0.25)"
+                onclick="closeModal('server-detail-modal');reinstallServer('${d.identifier}','${d.name}')">🔄 Reinstall</button>
+              <button class="btn btn-secondary" onclick="closeModal('server-detail-modal')">Tutup</button>
+            </div>`;
+        } else {
+            Progress.fail();
+            $('server-detail-body').innerHTML = `<div class="empty-state"><div class="empty-icon">❌</div><p>${res.error || 'Gagal memuat detail'}</p></div>`;
+        }
+    } catch(e) {
+        Progress.fail();
+        $('server-detail-body').innerHTML = `<div class="empty-state"><div class="empty-icon">❌</div><p>Gagal terhubung</p></div>`;
+    }
+}
+
+// ========== REINSTALL SERVER ==========
+function reinstallServer(identifier, name) {
+    confirmDialog(`Reinstall server "${name}"? Semua file akan direset ke default egg. Data database tidak terhapus.`, async () => {
+        Progress.start();
+        const res = await api('/pterodactyl/reinstall/' + identifier, 'POST');
+        if (res.ok) {
+            Progress.done();
+            toast('Reinstall server dimulai! Tunggu beberapa menit.', 'success');
+        } else {
+            Progress.fail();
+            toast('Gagal reinstall: ' + (res.error || 'Error'), 'error');
+        }
+    });
+}
+
+// ========== PERPANJANG HOSTING ==========
+async function loadRenewHosting() {
+    const tbody = $('rh-table-body');
+    tbody.innerHTML = `<tr><td colspan="5"><div class="page-loader"><div class="spinner"></div></div></td></tr>`;
+    Progress.start();
+    try {
+        const res = await api('/expirations');
+        if (res.ok) {
+            Progress.done();
+            renderRenewTable(res.data);
+        } else {
+            Progress.fail();
+            toast('Gagal memuat data', 'error');
+        }
+    } catch(e) { Progress.fail(); toast('Gagal terhubung', 'error'); }
+}
+
+function renderRenewTable(data) {
+    const tbody = $('rh-table-body');
+    if (!data || !data.length) {
+        tbody.innerHTML = `<tr><td colspan="5"><div class="empty-state"><div class="empty-icon">🔄</div><p>Tidak ada server dengan masa aktif terdaftar</p></div></td></tr>`;
+        return;
+    }
+    const now = new Date();
+    tbody.innerHTML = data.map(e => {
+        const parts = e.expire_at.split(' ');
+        const dmy = parts[0].split('/');
+        const hm = (parts[1] || '00:00').split(':');
+        const expDate = new Date(dmy[2], dmy[1]-1, dmy[0], hm[0], hm[1]);
+        const diff = Math.ceil((expDate - now) / (1000*60*60*24));
+        const badge = diff < 0 ? 'badge-red' : diff <= 1 ? 'badge-red' : diff <= 3 ? 'badge-yellow' : 'badge-green';
+        const label = diff < 0 ? 'Sudah expired' : diff === 0 ? 'Hari ini' : diff + ' hari lagi';
+        return `<tr>
+            <td>${e.server_name}</td>
+            <td>${e.owner_username || '-'}</td>
+            <td>${e.expire_at}</td>
+            <td><span class="badge ${badge}">${label}</span></td>
+            <td>
+              <button class="btn-sm btn-edit" onclick="openRenewModal('${e.server_id}','${e.server_name}','${e.expire_at}')">🔄 Perpanjang</button>
+            </td>
+        </tr>`;
+    }).join('');
+}
+
+function openRenewModal(serverId, serverName, currentExpire) {
+    $('renew-server-id').value = serverId;
+    $('renew-server-name').textContent = serverName;
+    $('renew-current-expire').textContent = currentExpire;
+    $('renew-add-days').value = '30';
+    openModal('renew-modal');
+}
+
+async function submitRenew() {
+    const serverId = $('renew-server-id').value;
+    const addDays = parseInt($('renew-add-days').value);
+    const btn = $('btn-do-renew');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="btn-spinner"></span> Memproses...';
+    Progress.start();
+    try {
+        const res = await api('/expirations/renew', 'POST', { server_id: serverId, add_days: addDays });
+        if (res.ok) {
+            Progress.done();
+            toast(`Server diperpanjang! Expired baru: ${res.new_expire}`, 'success');
+            closeModal('renew-modal');
+            loadRenewHosting();
+        } else {
+            Progress.fail();
+            toast('Gagal: ' + (res.error || 'Error'), 'error');
+        }
+    } catch(e) { Progress.fail(); toast('Gagal terhubung', 'error'); }
+    btn.disabled = false;
+    btn.innerHTML = '✅ Perpanjang';
+}

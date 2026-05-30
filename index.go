@@ -128,6 +128,21 @@ func autoMigrate() {
 			log   TEXT NOT NULL,
 			time  VARCHAR(32) NOT NULL
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
+
+		`CREATE TABLE IF NOT EXISTS server_expirations (
+			id              INT AUTO_INCREMENT PRIMARY KEY,
+			server_id       VARCHAR(64) NOT NULL UNIQUE,
+			server_name     VARCHAR(255) NOT NULL,
+			owner_username  VARCHAR(64) NOT NULL DEFAULT \'\',
+			owner_email     VARCHAR(128) NOT NULL DEFAULT \'\',
+			owner_phone     VARCHAR(32) NOT NULL DEFAULT \'\',
+			owner_password  VARCHAR(128) NOT NULL DEFAULT \'\',
+			egg_name        VARCHAR(128) NOT NULL DEFAULT \'\',
+			duration_days   INT NOT NULL DEFAULT 0,
+			notif_sent      TINYINT NOT NULL DEFAULT 0,
+			expire_at       DATETIME NOT NULL,
+			created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
 	}
 	for _, q := range queries {
 		if _, err := db.Exec(q); err != nil {
@@ -291,7 +306,11 @@ func sendWhatsApp(phone, message string) error {
 	return nil
 }
 
-func buildWAMessage(email, username, password, eggName string) string {
+func buildWAMessage(email, username, password, eggName, expiredDate string) string {
+	expiredLine := ""
+	if expiredDate != "" {
+		expiredLine = fmt.Sprintf("\n_expired : %s_", expiredDate)
+	}
 	return fmt.Sprintf(`________📦KOTAK PESANAN ANDA________
 _selamat pesanan anda sudah terkonfirmasi oleh owner_
 
@@ -299,7 +318,7 @@ _data data account anda_
 _gmail : %s_
 _user : %s_
 _password : %s_
-_egg : %s_
+_egg : %s_%s
 
 _link untuk masuk ke hosting_
 _link panel : %s_
@@ -310,7 +329,7 @@ _1.dilarang menggunakan script bertujuan ddos/hacking/bypass_
 _2.dilarang mencoba otak Atik sistem operasi_
 _3.jika account hilang/dicuri teman tidak ada refund_
 _4.refund aktif selama 7 hari_`,
-		email, username, password, eggName, PanelLink, PanelPMALink)
+		email, username, password, eggName, expiredLine, PanelLink, PanelPMALink)
 }
 
 // ============================================================
@@ -390,6 +409,14 @@ func main() {
 	mux.HandleFunc("/api/logs", handleLogs)
 	mux.HandleFunc("/api/logs/clear", handleLogsClear)
 
+	// Server Expirations
+	mux.HandleFunc("/api/expirations", handleExpirations)
+	mux.HandleFunc("/api/expirations/renew", handleRenewServer)
+
+	// Server Detail & Reinstall
+	mux.HandleFunc("/api/pterodactyl/server-detail/", handleServerDetail)
+	mux.HandleFunc("/api/pterodactyl/reinstall/", handleReinstallServer)
+
 	// Catch-all -> serve SPA
 	mux.HandleFunc("/", serveIndex)
 
@@ -397,6 +424,10 @@ func main() {
 	if port == "" {
 		port = "8080"
 	}
+
+	// Start auto-expiry checker
+	go startExpiryChecker()
+
 	log.Printf("🚀 Cpanel DomayerHosting By Ren&Kyz running on :%s", port)
 	log.Fatal(http.ListenAndServe(":"+port, corsMiddleware(mux)))
 }
@@ -809,6 +840,7 @@ func handleCreateServer(w http.ResponseWriter, r *http.Request) {
 		OwnerUsername    string `json:"owner_username"`
 		OwnerPassword    string `json:"owner_password"`
 		EggName          string `json:"egg_name"`
+		ExpiredDays      int    `json:"expired_days"`
 	}
 	if err := decodeBody(r, &body); err != nil {
 		errResp(w, 400, "Invalid JSON")
@@ -895,9 +927,34 @@ func handleCreateServer(w http.ResponseWriter, r *http.Request) {
 
 	writeLog(u.Username, u.Role, fmt.Sprintf("Membuat server: %s untuk %s", body.Name, body.OwnerUsername))
 
+	// Get server identifier from response
+	var createRes struct {
+		Attributes struct {
+			Identifier string `json:"identifier"`
+		}
+	}
+	json.Unmarshal(data, &createRes)
+	serverIdentifier := createRes.Attributes.Identifier
+
+	// Save expiration if days set
+	expiredLabel := ""
+	if body.ExpiredDays > 0 && serverIdentifier != "" && db != nil {
+		expireAt := time.Now().Add(time.Duration(body.ExpiredDays) * 24 * time.Hour)
+		db.Exec(
+			`INSERT INTO server_expirations (server_id, server_name, owner_username, owner_email, owner_phone, owner_password, egg_name, duration_days, expire_at)
+			VALUES (?,?,?,?,?,?,?,?,?)
+			ON DUPLICATE KEY UPDATE expire_at=VALUES(expire_at), duration_days=VALUES(duration_days), notif_sent=0`,
+			serverIdentifier, body.Name, body.OwnerUsername, body.OwnerEmail,
+			body.Phone, body.OwnerPassword, body.EggName, body.ExpiredDays,
+			expireAt.Format("2006-01-02 15:04:05"),
+		)
+		expiredLabel = expireAt.Format("02/01/2006")
+		writeLog(u.Username, u.Role, fmt.Sprintf("Set expired server %s: %d hari (%s)", body.Name, body.ExpiredDays, expiredLabel))
+	}
+
 	// Send WhatsApp
 	if body.Phone != "" && body.OwnerEmail != "" {
-		msg := buildWAMessage(body.OwnerEmail, body.OwnerUsername, body.OwnerPassword, body.EggName)
+		msg := buildWAMessage(body.OwnerEmail, body.OwnerUsername, body.OwnerPassword, body.EggName, expiredLabel)
 		if waErr := sendWhatsApp(body.Phone, msg); waErr != nil {
 			log.Printf("⚠ WA send error: %v", waErr)
 		}
@@ -1255,6 +1312,433 @@ func handleLogsClear(w http.ResponseWriter, r *http.Request) {
 }
 
 // ============================================================
+// SERVER EXPIRATION SYSTEM
+// ============================================================
+
+func startExpiryChecker() {
+	log.Println("⏰ Auto-expiry checker started")
+	for {
+		time.Sleep(5 * time.Minute)
+		checkAndDeleteExpired()
+		checkAndSendExpiryNotif()
+	}
+}
+
+// notifThreshold returns how many hours before expired a notification should be sent
+func notifThreshold(durationDays int) int {
+	switch durationDays {
+	case 1:
+		return 4   // 4 jam sebelum expired
+	case 3:
+		return 24  // 1 hari sebelum expired
+	default:
+		return 72  // 3 hari sebelum expired (7,14,30)
+	}
+}
+
+func checkAndSendExpiryNotif() {
+	if db == nil {
+		return
+	}
+	rows, err := db.Query(`SELECT server_id, server_name, owner_username, owner_email, owner_phone, owner_password, egg_name, duration_days, expire_at
+		FROM server_expirations WHERE notif_sent=0 AND expire_at > NOW()`)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	type notifEntry struct {
+		ID       string
+		Name     string
+		Owner    string
+		Email    string
+		Phone    string
+		Password string
+		Egg      string
+		Duration int
+		ExpireAt time.Time
+	}
+	var entries []notifEntry
+	for rows.Next() {
+		var e notifEntry
+		rows.Scan(&e.ID, &e.Name, &e.Owner, &e.Email, &e.Phone, &e.Password, &e.Egg, &e.Duration, &e.ExpireAt)
+		entries = append(entries, e)
+	}
+	rows.Close()
+
+	now := time.Now()
+	for _, e := range entries {
+		threshold := time.Duration(notifThreshold(e.Duration)) * time.Hour
+		timeLeft := e.ExpireAt.Sub(now)
+		if timeLeft <= threshold {
+			// Send WA notif
+			if e.Phone != "" {
+				msg := buildWAExpiredNotif(e.Name, e.Owner, e.ExpireAt.Format("02/01/2006 15:04"), timeLeft)
+				sendWhatsApp(e.Phone, msg)
+			}
+			db.Exec("UPDATE server_expirations SET notif_sent=1 WHERE server_id=?", e.ID)
+			writeLog("system", 1, fmt.Sprintf("Kirim notif expired ke %s: server %s expired %s", e.Phone, e.Name, e.ExpireAt.Format("02/01/2006 15:04")))
+			log.Printf("📱 Notif expired sent: %s → %s", e.Name, e.Phone)
+		}
+	}
+}
+
+func buildWAExpiredNotif(serverName, ownerUsername, expireDate string, timeLeft time.Duration) string {
+	var timeStr string
+	hours := int(timeLeft.Hours())
+	if hours < 24 {
+		timeStr = fmt.Sprintf("%d jam lagi", hours)
+	} else {
+		timeStr = fmt.Sprintf("%d hari lagi", int(timeLeft.Hours()/24))
+	}
+	return fmt.Sprintf(`⚠️ *PERINGATAN EXPIRED HOSTING* ⚠️
+
+_Halo %s, server kamu akan segera expired!_
+
+🖥 *Server* : %s
+⏰ *Expired* : %s
+⏳ *Sisa* : %s
+
+_Segera hubungi owner untuk perpanjang hosting agar server tidak terhapus otomatis._
+
+_Link Panel_ : %s`,
+		ownerUsername, serverName, expireDate, timeStr, PanelLink)
+}
+
+func checkAndDeleteExpired() {
+	if db == nil {
+		return
+	}
+	now := time.Now().Format("2006-01-02 15:04:05")
+	rows, err := db.Query(`SELECT server_id, server_name, owner_username, owner_phone
+		FROM server_expirations WHERE expire_at <= ?`, now)
+	if err != nil {
+		log.Printf("⚠ Expiry check error: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	type expEntry struct {
+		ID    string
+		Name  string
+		Owner string
+		Phone string
+	}
+	var expired []expEntry
+	for rows.Next() {
+		var e expEntry
+		rows.Scan(&e.ID, &e.Name, &e.Owner, &e.Phone)
+		expired = append(expired, e)
+	}
+	rows.Close()
+
+	for _, e := range expired {
+		log.Printf("🗑 Auto-deleting expired server: %s (%s)", e.Name, e.ID)
+		_, code, err := pteroRequest("DELETE", "/api/application/servers/"+e.ID+"/force", nil)
+		if err != nil || (code != 200 && code != 204) {
+			pteroRequest("DELETE", "/api/application/servers/"+e.ID, nil)
+		}
+		// Notify buyer server deleted
+		if e.Phone != "" {
+			msg := fmt.Sprintf("❌ *SERVER DIHAPUS*
+
+_Server *%s* milik %s telah dihapus karena masa aktif habis._
+
+_Hubungi owner jika ingin order ulang._
+_Link Panel: %s_",
+				e.Name, e.Owner, PanelLink)
+			sendWhatsApp(e.Phone, msg)
+		}
+		db.Exec("DELETE FROM server_expirations WHERE server_id=?", e.ID)
+		writeLog("system", 1, fmt.Sprintf("Auto-delete server expired: %s (owner: %s)", e.Name, e.Owner))
+		log.Printf("✅ Expired server deleted: %s", e.Name)
+	}
+}
+
+func handleExpirations(w http.ResponseWriter, r *http.Request) {
+	u := requireAuth(w, r)
+	if u == nil {
+		return
+	}
+	if db == nil {
+		errResp(w, 503, "Database tidak tersedia")
+		return
+	}
+	rows, err := db.Query("SELECT server_id, server_name, owner_username, expire_at, created_at FROM server_expirations ORDER BY expire_at ASC")
+	if err != nil {
+		errResp(w, 500, "DB error")
+		return
+	}
+	defer rows.Close()
+	type ExpOut struct {
+		ServerID      string `json:"server_id"`
+		ServerName    string `json:"server_name"`
+		OwnerUsername string `json:"owner_username"`
+		ExpireAt      string `json:"expire_at"`
+		CreatedAt     string `json:"created_at"`
+	}
+	out := []ExpOut{}
+	for rows.Next() {
+		var e ExpOut
+		var expAt, creAt time.Time
+		rows.Scan(&e.ServerID, &e.ServerName, &e.OwnerUsername, &expAt, &creAt)
+		e.ExpireAt = expAt.Format("02/01/2006 15:04")
+		e.CreatedAt = creAt.Format("02/01/2006 15:04")
+		out = append(out, e)
+	}
+	jsonResp(w, map[string]interface{}{"ok": true, "data": out})
+}
+
+// ============================================================
+// RENEW SERVER HANDLER
+// ============================================================
+func handleRenewServer(w http.ResponseWriter, r *http.Request) {
+	u := requireAuth(w, r)
+	if u == nil { return }
+	if r.Method != http.MethodPost {
+		errResp(w, 405, "Method not allowed"); return
+	}
+	if db == nil {
+		errResp(w, 503, "Database tidak tersedia"); return
+	}
+	var body struct {
+		ServerID   string `json:"server_id"`
+		AddDays    int    `json:"add_days"`
+	}
+	if err := decodeBody(r, &body); err != nil {
+		errResp(w, 400, "Invalid JSON"); return
+	}
+	if body.ServerID == "" || body.AddDays <= 0 {
+		errResp(w, 400, "server_id dan add_days wajib diisi"); return
+	}
+
+	// Get current expiry data
+	var serverName, ownerUsername, ownerPhone, ownerEmail, ownerPassword, eggName string
+	var currentExpire time.Time
+	var durationDays int
+	err := db.QueryRow(`SELECT server_name, owner_username, owner_phone, owner_email, owner_password, egg_name, duration_days, expire_at
+		FROM server_expirations WHERE server_id=?`, body.ServerID).Scan(
+		&serverName, &ownerUsername, &ownerPhone, &ownerEmail, &ownerPassword, &eggName, &durationDays, &currentExpire)
+	if err != nil {
+		errResp(w, 404, "Server tidak ditemukan di database expired"); return
+	}
+
+	// New expiry = current + added days (if already expired, start from now)
+	base := currentExpire
+	if base.Before(time.Now()) {
+		base = time.Now()
+	}
+	newExpire := base.Add(time.Duration(body.AddDays) * 24 * time.Hour)
+	newDuration := durationDays + body.AddDays
+	if newDuration > 30 { newDuration = 30 }
+
+	db.Exec(`UPDATE server_expirations SET expire_at=?, duration_days=?, notif_sent=0 WHERE server_id=?`,
+		newExpire.Format("2006-01-02 15:04:05"), newDuration, body.ServerID)
+
+	writeLog(u.Username, u.Role, fmt.Sprintf("Perpanjang server %s: +%d hari (expire: %s)", serverName, body.AddDays, newExpire.Format("02/01/2006")))
+
+	// Send WA notif to buyer
+	if ownerPhone != "" {
+		msg := fmt.Sprintf(`✅ *PERPANJANG HOSTING BERHASIL*
+
+_Halo %s, hosting kamu berhasil diperpanjang!_
+
+🖥 *Server* : %s
+📦 *Egg* : %s
+➕ *Ditambah* : %d hari
+📅 *Expired baru* : %s
+
+_Link Panel_ : %s
+_Link phpMyAdmin_ : %s
+
+*Terima kasih sudah memperpanjang!* 🎉`,
+			ownerUsername, serverName, eggName, body.AddDays,
+			newExpire.Format("02/01/2006 15:04"), PanelLink, PanelPMALink)
+		sendWhatsApp(ownerPhone, msg)
+	}
+
+	jsonResp(w, map[string]interface{}{
+		"ok": true,
+		"new_expire": newExpire.Format("02/01/2006 15:04"),
+		"server_name": serverName,
+	})
+}
+
+// ============================================================
+// SERVER DETAIL HANDLER
+// ============================================================
+func handleServerDetail(w http.ResponseWriter, r *http.Request) {
+	u := requireAuth(w, r)
+	if u == nil { return }
+	identifier := strings.TrimPrefix(r.URL.Path, "/api/pterodactyl/server-detail/")
+	identifier = strings.Split(identifier, "/")[0]
+	if identifier == "" {
+		errResp(w, 400, "Missing identifier"); return
+	}
+
+	// Fetch server by identifier using external ID lookup
+	data, code, err := pteroRequest("GET", "/api/application/servers?per_page=100&include=allocations,egg,nest", nil)
+	if err != nil || code != 200 {
+		errResp(w, 500, "Gagal mengambil data server"); return
+	}
+
+	var res struct {
+		Data []struct {
+			Attributes struct {
+				ID          int    `json:"id"`
+				Name        string `json:"name"`
+				Identifier  string `json:"identifier"`
+				Description string `json:"description"`
+				Status      string `json:"status"`
+				Limits struct {
+					Memory int `json:"memory"`
+					Disk   int `json:"disk"`
+					CPU    int `json:"cpu"`
+					Swap   int `json:"swap"`
+					IO     int `json:"io"`
+				}
+				FeatureLimits struct {
+					Databases   int `json:"databases"`
+					Backups     int `json:"backups"`
+					Allocations int `json:"allocations"`
+				} `json:"feature_limits"`
+				Relationships struct {
+					Allocations struct {
+						Data []struct {
+							Attributes struct {
+								IP       string `json:"ip"`
+								Port     int    `json:"port"`
+								IPAlias  string `json:"ip_alias"`
+								Assigned bool   `json:"assigned"`
+							}
+						}
+					}
+					Egg struct {
+						Attributes struct {
+							Name string `json:"name"`
+						}
+					}
+					Nest struct {
+						Attributes struct {
+							Name string `json:"name"`
+						}
+					}
+				}
+			}
+		}
+	}
+	json.Unmarshal(data, &res)
+
+	for _, d := range res.Data {
+		if d.Attributes.Identifier != identifier {
+			continue
+		}
+		a := d.Attributes
+
+		// Get primary allocation
+		ip, port := "", 0
+		for _, alloc := range a.Relationships.Allocations.Data {
+			if alloc.Attributes.Assigned {
+				ip = alloc.Attributes.IP
+				if alloc.Attributes.IPAlias != "" {
+					ip = alloc.Attributes.IPAlias
+				}
+				port = alloc.Attributes.Port
+				break
+			}
+		}
+
+		status := a.Status
+		if status == "" { status = "running" }
+
+		// Get expiry info
+		expireAt := ""
+		if db != nil {
+			var t time.Time
+			if err := db.QueryRow("SELECT expire_at FROM server_expirations WHERE server_id=?", identifier).Scan(&t); err == nil {
+				expireAt = t.Format("02/01/2006 15:04")
+			}
+		}
+
+		jsonResp(w, map[string]interface{}{
+			"ok": true,
+			"data": map[string]interface{}{
+				"id":          a.ID,
+				"name":        a.Name,
+				"identifier":  a.Identifier,
+				"description": a.Description,
+				"status":      status,
+				"ip":          ip,
+				"port":        port,
+				"memory":      a.Limits.Memory,
+				"disk":        a.Limits.Disk,
+				"cpu":         a.Limits.CPU,
+				"egg":         a.Relationships.Egg.Attributes.Name,
+				"nest":        a.Relationships.Nest.Attributes.Name,
+				"db_limit":    a.FeatureLimits.Databases,
+				"backup_limit": a.FeatureLimits.Backups,
+				"expire_at":   expireAt,
+			},
+		})
+		return
+	}
+	errResp(w, 404, "Server tidak ditemukan")
+}
+
+// ============================================================
+// REINSTALL SERVER HANDLER
+// ============================================================
+func handleReinstallServer(w http.ResponseWriter, r *http.Request) {
+	u := requireAuth(w, r)
+	if u == nil { return }
+	if r.Method != http.MethodPost {
+		errResp(w, 405, "Method not allowed"); return
+	}
+	identifier := strings.TrimPrefix(r.URL.Path, "/api/pterodactyl/reinstall/")
+	identifier = strings.Split(identifier, "/")[0]
+	if identifier == "" {
+		errResp(w, 400, "Missing identifier"); return
+	}
+
+	// Get server internal ID first
+	data, code, err := pteroRequest("GET", "/api/application/servers?per_page=100", nil)
+	if err != nil || code != 200 {
+		errResp(w, 500, "Gagal mengambil server"); return
+	}
+	var res struct {
+		Data []struct {
+			Attributes struct {
+				ID         int    `json:"id"`
+				Identifier string `json:"identifier"`
+				Name       string `json:"name"`
+			}
+		}
+	}
+	json.Unmarshal(data, &res)
+
+	serverID := 0
+	serverName := ""
+	for _, d := range res.Data {
+		if d.Attributes.Identifier == identifier {
+			serverID = d.Attributes.ID
+			serverName = d.Attributes.Name
+			break
+		}
+	}
+	if serverID == 0 {
+		errResp(w, 404, "Server tidak ditemukan"); return
+	}
+
+	_, rCode, rErr := pteroRequest("POST", fmt.Sprintf("/api/application/servers/%d/reinstall", serverID), nil)
+	if rErr != nil || (rCode != 200 && rCode != 202 && rCode != 204) {
+		errResp(w, 500, "Gagal reinstall server"); return
+	}
+
+	writeLog(u.Username, u.Role, fmt.Sprintf("Reinstall server: %s (%s)", serverName, identifier))
+	jsonResp(w, map[string]interface{}{"ok": true})
+}
+
+// ============================================================
 // HTML PAGE (SPA)
 // ============================================================
 func htmlPage() string {
@@ -1371,6 +1855,15 @@ func htmlPage() string {
           </svg>
         </div>
         <span class="nav-label">List Nests</span>
+      </div>
+
+      <div class="nav-item" data-page="renewHosting" title="Perpanjang Hosting" onclick="navigateTo('renewHosting')">
+        <div class="nav-icon">
+          <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+          </svg>
+        </div>
+        <span class="nav-label">Perpanjang Hosting</span>
       </div>
 
       <div class="nav-section-title owner-only">OWNER ONLY</div>
@@ -1494,10 +1987,28 @@ func htmlPage() string {
           Informasi Panel
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:0.85rem;color:var(--text-secondary)">
-          <div>🌐 Panel URL: <span style="color:var(--cyan)">domayer.septacloud.me</span></div>
-          <div>💾 phpMyAdmin: <span style="color:var(--cyan)">/pma</span></div>
-          <div>🔗 Link Buyer: <span style="color:var(--cyan)">reshhus.myserverr.web.id</span></div>
+          <div>🌐 Panel URL: <a href="https://domayer.septacloud.me" target="_blank" style="color:var(--cyan)">domayer.septacloud.me</a></div>
+          <div>💾 phpMyAdmin: <a href="https://domayer.septacloud.me/pma" target="_blank" style="color:var(--cyan)">domayer.septacloud.me/pma</a></div>
+          <div>🔗 Link Buyer: <a href="https://domayer.septacloud.me" target="_blank" style="color:var(--cyan)">domayer.septacloud.me</a></div>
           <div>📱 WhatsApp: <span style="color:var(--green)">Fonnte Connected</span></div>
+        </div>
+      </div>
+
+      <!-- Server Expirations Card -->
+      <div class="card" style="margin-top:20px">
+        <div class="card-title" style="margin-bottom:14px">
+          ⏰ Server Akan Expired
+          <button class="btn btn-secondary" style="margin-left:auto;padding:5px 12px;font-size:0.78rem" onclick="loadHome()">🔄</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Server Name</th><th>Owner</th><th>Expired Pada</th><th>Sisa Waktu</th></tr>
+            </thead>
+            <tbody id="exp-table-body">
+              <tr><td colspan="4"><div class="empty-state"><div class="empty-icon">⏰</div><p>Tidak ada server dengan expired</p></div></td></tr>
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
@@ -1668,6 +2179,21 @@ func htmlPage() string {
             <input id="cs-phone" type="text" placeholder="Contoh: 6281234567890 atau 081234567890">
           </div>
 
+          <hr class="section-divider">
+          <div class="section-label">⏰ Masa Aktif Server</div>
+
+          <div class="form-group full">
+            <label>Expired Server (opsional — server otomatis terhapus saat expired)</label>
+            <select id="cs-expired-days">
+              <option value="0">♾ Tidak ada expired (permanen)</option>
+              <option value="1">1 Hari</option>
+              <option value="3">3 Hari</option>
+              <option value="7">7 Hari</option>
+              <option value="14">14 Hari</option>
+              <option value="30">30 Hari</option>
+            </select>
+          </div>
+
           <div class="form-actions">
             <button id="btn-create-server" class="btn btn-primary" onclick="submitCreateServer()">🚀 Buat Server &amp; Kirim WA</button>
           </div>
@@ -1788,6 +2314,27 @@ func htmlPage() string {
       </div>
     </div>
 
+    <!-- ===== PAGE: PERPANJANG HOSTING ===== -->
+    <div id="page-renewHosting" class="page">
+      <div class="section-header">
+        <h2><div class="h-icon">🔄</div> Perpanjang Hosting</h2>
+        <button class="btn btn-secondary" onclick="loadRenewHosting()">🔄 Refresh</button>
+      </div>
+      <div class="card">
+        <div class="card-title">📋 Server dengan Masa Aktif</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Server Name</th><th>Owner</th><th>Expired Pada</th><th>Sisa</th><th>Aksi</th></tr>
+            </thead>
+            <tbody id="rh-table-body">
+              <tr><td colspan="5"><div class="page-loader"><div class="spinner"></div></div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
     <!-- ===== PAGE: ACTIVITY LOG ===== -->
     <div id="page-activityLog" class="page owner-only">
       <div class="section-header">
@@ -1885,6 +2432,54 @@ func htmlPage() string {
       <div class="form-actions">
         <button class="btn btn-secondary" onclick="closeModal('edit-panel-user-modal')">Batal</button>
         <button class="btn btn-primary" onclick="submitEditPanelUser()">💾 Simpan</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Server Detail Modal -->
+<div id="server-detail-modal" class="modal-overlay">
+  <div class="modal modal-wide">
+    <div class="modal-header">
+      <h3>🖥 Detail Server</h3>
+      <button class="modal-close" onclick="closeModal('server-detail-modal')">✕</button>
+    </div>
+    <div class="modal-body" id="server-detail-body">
+      <div class="page-loader"><div class="spinner"></div></div>
+    </div>
+  </div>
+</div>
+
+<!-- Renew Server Modal -->
+<div id="renew-modal" class="modal-overlay">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>🔄 Perpanjang Server</h3>
+      <button class="modal-close" onclick="closeModal('renew-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <input id="renew-server-id" type="hidden">
+      <div style="margin-bottom:16px">
+        <div style="font-size:0.85rem;color:var(--text-secondary)">Server:</div>
+        <div id="renew-server-name" style="font-weight:700;font-size:1rem;color:var(--cyan)"></div>
+        <div style="font-size:0.82rem;color:var(--text-secondary);margin-top:4px">Expired saat ini: <span id="renew-current-expire" style="color:var(--yellow)"></span></div>
+      </div>
+      <div class="form-group">
+        <label>Tambah Durasi</label>
+        <select id="renew-add-days">
+          <option value="1">+ 1 Hari</option>
+          <option value="3">+ 3 Hari</option>
+          <option value="7">+ 7 Hari</option>
+          <option value="14">+ 14 Hari</option>
+          <option value="30">+ 30 Hari</option>
+        </select>
+      </div>
+      <div style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:16px">
+        📱 Notifikasi WA otomatis dikirim ke buyer setelah perpanjang.
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-secondary" onclick="closeModal('renew-modal')">Batal</button>
+        <button id="btn-do-renew" class="btn btn-primary" onclick="submitRenew()">✅ Perpanjang</button>
       </div>
     </div>
   </div>
