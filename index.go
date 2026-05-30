@@ -146,7 +146,7 @@ func autoMigrate() {
 }
 
 func md5Hash(s string) string {
-	return fmt.Sprintf("%x", md5.Sum([]byte(s)))
+	return s
 }
 
 // ============================================================
