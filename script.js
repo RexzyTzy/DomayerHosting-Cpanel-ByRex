@@ -836,9 +836,33 @@ document.addEventListener('DOMContentLoaded', () => {
     if (s) s.addEventListener('input', () => renderUsersTable(cachedUsers));
 });
 
+// ========== WIB CLOCK ==========
+function startWIBClock() {
+    const el = document.getElementById('wib-clock');
+    if (!el) return;
+    function tick() {
+        const now = new Date();
+        // Convert to WIB (UTC+7)
+        const wib = new Date(now.getTime() + (7 * 60 * 60 * 1000));
+        const days = ['Min','Sen','Sel','Rab','Kam','Jum','Sab'];
+        const months = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des'];
+        const d = wib.getUTCDate().toString().padStart(2,'0');
+        const mo = months[wib.getUTCMonth()];
+        const y = wib.getUTCFullYear();
+        const h = wib.getUTCHours().toString().padStart(2,'0');
+        const m = wib.getUTCMinutes().toString().padStart(2,'0');
+        const s = wib.getUTCSeconds().toString().padStart(2,'0');
+        const day = days[wib.getUTCDay()];
+        el.textContent = `🕐 ${day}, ${d} ${mo} ${y} — ${h}:${m}:${s} WIB`;
+    }
+    tick();
+    setInterval(tick, 1000);
+}
+
 // ========== INIT ==========
 document.addEventListener('DOMContentLoaded', () => {
     Progress.init();
+    startWIBClock();
     initLogin();
     Progress.start();
     api('/me').then(res => {

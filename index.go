@@ -46,6 +46,9 @@ var db *sql.DB
 // In-memory session store: token -> username
 var sessions = map[string]string{}
 
+// WIB timezone (UTC+7)
+var wibLoc = time.FixedZone("WIB", 7*60*60)
+
 // ============================================================
 // MODELS
 // ============================================================
@@ -226,7 +229,7 @@ func writeLog(username string, role int, logMsg string) {
 	if db == nil {
 		return
 	}
-	t := time.Now().Format("15:04 02/01/2006")
+	t := time.Now().In(wibLoc).Format("15:04 02/01/2006")
 	db.Exec("INSERT INTO logs (users, role, log, time) VALUES (?,?,?,?)", username, role, logMsg, t)
 }
 
@@ -243,7 +246,7 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func generateToken() string {
-	return fmt.Sprintf("%x", md5.Sum([]byte(fmt.Sprintf("%d-%d", time.Now().UnixNano(), os.Getpid()))))
+	return fmt.Sprintf("%x", md5.Sum([]byte(fmt.Sprintf("%d-%d", time.Now().In(wibLoc).UnixNano(), os.Getpid()))))
 }
 
 // ============================================================
@@ -939,7 +942,7 @@ func handleCreateServer(w http.ResponseWriter, r *http.Request) {
 	// Save expiration if days set
 	expiredLabel := ""
 	if body.ExpiredDays > 0 && serverIdentifier != "" && db != nil {
-		expireAt := time.Now().Add(time.Duration(body.ExpiredDays) * 24 * time.Hour)
+		expireAt := time.Now().In(wibLoc).Add(time.Duration(body.ExpiredDays) * 24 * time.Hour)
 		db.Exec(
 			`INSERT INTO server_expirations (server_id, server_name, owner_username, owner_email, owner_phone, owner_password, egg_name, duration_days, expire_at)
 			VALUES (?,?,?,?,?,?,?,?,?)
@@ -1366,7 +1369,7 @@ func checkAndSendExpiryNotif() {
 	}
 	rows.Close()
 
-	now := time.Now()
+	now := time.Now().In(wibLoc)
 	for _, e := range entries {
 		threshold := time.Duration(notifThreshold(e.Duration)) * time.Hour
 		timeLeft := e.ExpireAt.Sub(now)
@@ -1409,7 +1412,7 @@ func checkAndDeleteExpired() {
 	if db == nil {
 		return
 	}
-	now := time.Now().Format("2006-01-02 15:04:05")
+	now := time.Now().In(wibLoc).Format("2006-01-02 15:04:05")
 	rows, err := db.Query(`SELECT server_id, server_name, owner_username, owner_phone
 		FROM server_expirations WHERE expire_at <= ?`, now)
 	if err != nil {
@@ -1440,12 +1443,12 @@ func checkAndDeleteExpired() {
 		}
 		// Notify buyer server deleted
 		if e.Phone != "" {
-			msg := fmt.Sprintf(`❌ *SERVER DIHAPUS*
+			msg := fmt.Sprintf("❌ *SERVER DIHAPUS*
 
 _Server *%s* milik %s telah dihapus karena masa aktif habis._
 
 _Hubungi owner jika ingin order ulang._
-_Link Panel: %s_`,
+_Link Panel: %s_",
 				e.Name, e.Owner, PanelLink)
 			sendWhatsApp(e.Phone, msg)
 		}
@@ -1525,8 +1528,8 @@ func handleRenewServer(w http.ResponseWriter, r *http.Request) {
 
 	// New expiry = current + added days (if already expired, start from now)
 	base := currentExpire
-	if base.Before(time.Now()) {
-		base = time.Now()
+	if base.Before(time.Now().In(wibLoc)) {
+		base = time.Now().In(wibLoc)
 	}
 	newExpire := base.Add(time.Duration(body.AddDays) * 24 * time.Hour)
 	newDuration := durationDays + body.AddDays
@@ -1909,6 +1912,7 @@ func htmlPage() string {
       <div class="navbar-title">Cpanel <span>DomayerHosting</span></div>
     </div>
     <div class="navbar-right">
+      <div id="wib-clock" style="font-size:0.78rem;color:var(--cyan);background:rgba(0,255,204,0.07);border:1px solid rgba(0,255,204,0.15);padding:5px 12px;border-radius:8px;font-weight:600;letter-spacing:0.5px;white-space:nowrap"></div>
       <div class="navbar-user">
         <div class="nb-avatar u-initials">AD</div>
         <div>
