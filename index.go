@@ -1443,12 +1443,7 @@ func checkAndDeleteExpired() {
 		}
 		// Notify buyer server deleted
 		if e.Phone != "" {
-			msg := fmt.Sprintf("❌ *SERVER DIHAPUS*
-
-_Server *%s* milik %s telah dihapus karena masa aktif habis._
-
-_Hubungi owner jika ingin order ulang._
-_Link Panel: %s_",
+			msg := fmt.Sprintf("❌ *SERVER DIHAPUS*\n\n_Server *%s* milik %s telah dihapus karena masa aktif habis._\n\n_Hubungi owner jika ingin order ulang._\n_Link Panel: %s_",
 				e.Name, e.Owner, PanelLink)
 			sendWhatsApp(e.Phone, msg)
 		}
