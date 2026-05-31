@@ -1427,8 +1427,8 @@ func notifThreshold(durationDays int) int {
 func checkPreSuspendNotif() {
 	if db == nil { return }
 	now := time.Now().In(wibLoc)
-	rows, err := db.Query(`+"`"+`SELECT server_id, server_name, owner_username, owner_phone, expire_at
-		FROM server_expirations WHERE pre_suspend_notif=0 AND suspended=0 AND expire_at > ?`+"`"+`,
+	rows, err := db.Query(`SELECT server_id, server_name, owner_username, owner_phone, expire_at
+		FROM server_expirations WHERE pre_suspend_notif=0 AND suspended=0 AND expire_at > ?`,
 		now.Format("2006-01-02 15:04:05"))
 	if err != nil { return }
 	defer rows.Close()
@@ -1459,8 +1459,8 @@ func checkPreSuspendNotif() {
 func checkAndSuspendExpired() {
 	if db == nil { return }
 	now := time.Now().In(wibLoc).Format("2006-01-02 15:04:05")
-	rows, err := db.Query(`+"`"+`SELECT server_id, server_name, owner_username, owner_phone
-		FROM server_expirations WHERE expire_at <= ? AND suspended=0`+"`"+`, now)
+	rows, err := db.Query(`SELECT server_id, server_name, owner_username, owner_phone
+		FROM server_expirations WHERE expire_at <= ? AND suspended=0`, now)
 	if err != nil { return }
 	defer rows.Close()
 	type ent struct{ ID, Name, Owner, Phone string }
@@ -1492,8 +1492,8 @@ func checkAndSuspendExpired() {
 func checkAndDeleteSuspended() {
 	if db == nil { return }
 	deadline := time.Now().In(wibLoc).Add(-3 * 24 * time.Hour).Format("2006-01-02 15:04:05")
-	rows, err := db.Query(`+"`"+`SELECT server_id, server_name, owner_id, owner_username, owner_phone, owner_email
-		FROM server_expirations WHERE suspended=1 AND suspended_at <= ?`+"`"+`, deadline)
+	rows, err := db.Query(`SELECT server_id, server_name, owner_id, owner_username, owner_phone, owner_email
+		FROM server_expirations WHERE suspended=1 AND suspended_at <= ?`, deadline)
 	if err != nil { return }
 	defer rows.Close()
 	type ent struct{ ID, Name string; OwnerID int; Owner, Phone, Email string }
@@ -1557,9 +1557,9 @@ func handleCheckEmptyUsers(w http.ResponseWriter, r *http.Request) {
 		var res struct {
 			Data []struct {
 				Attributes struct {
-					ID       int    `+"`"+`json:"id"`+"`"+`
-					Username string `+"`"+`json:"username"`+"`"+`
-					Email    string `+"`"+`json:"email"`+"`"+`
+					ID       int    `json:"id"`
+					Username string `json:"username"`
+					Email    string `json:"email"`
 					Relationships struct {
 						Servers struct{ Data []interface{} }
 					}
@@ -1578,8 +1578,8 @@ func handleCheckEmptyUsers(w http.ResponseWriter, r *http.Request) {
 
 func checkAndSendExpiryNotif() {
 	if db == nil { return }
-	rows, err := db.Query(`+"`"+`SELECT server_id, server_name, owner_username, owner_phone, duration_days, expire_at
-		FROM server_expirations WHERE notif_sent=0 AND suspended=0 AND expire_at > NOW()`+"`"+`)
+	rows, err := db.Query(`SELECT server_id, server_name, owner_username, owner_phone, duration_days, expire_at
+		FROM server_expirations WHERE notif_sent=0 AND suspended=0 AND expire_at > NOW()`)
 	if err != nil { return }
 	defer rows.Close()
 	type ent struct{ ID, Name, Owner, Phone string; Duration int; ExpireAt time.Time }
