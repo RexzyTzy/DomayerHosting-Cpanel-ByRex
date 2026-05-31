@@ -57,22 +57,16 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
 let audioCtx = null;
 function getAudio() { if (!audioCtx) audioCtx = new AudioCtx(); return audioCtx; }
 
-// Real click sound (MP3 embedded)
-const CLICK_MP3 = 'data:audio/mp3;base64,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SmuagKDwSg0XOlgdAQiNgy8Nfurhp2KneV/1hN10RaiNvqxun/01TEFNRTMuMTAwVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVf/7kETwgAPHSEbjBhzScIkI7GGDdgggqRMghGvA3AuiZBAM0FVVVVVVVUxBTUUzLjEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVTEFNRTMuMTAwVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVUxBTUUzLjEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVf/7EETdj/AAAH+AAAAIAAAP8AAAAQAAAf4AAAAgAAA/wAAABFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//sQRN2P8AAAf4AAAAgAAA/wAAABAAAB/gAAACAAAD/AAAAEVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVX/+xBk3Y/wAAB/gAAACAAAD/AAAAEAAAH+AAAAIAAAP8AAAARVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVf/7EGTdj/AAAH+AAAAIAAAP8AAAAQAAAaQAAAAgAAA0gAAABFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//sQZN2P8AAAaQAAAAgAAA0gAAABAAABpAAAACAAADSAAAAEVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVU=';
+// Click sound - loaded from /click.mp3
 let clickBuffer = null;
-let clickAudio = null;
 
 async function loadClickSound() {
     try {
         const ac = getAudio();
-        const res = await fetch(CLICK_MP3);
+        const res = await fetch('/click.mp3');
         const arr = await res.arrayBuffer();
         clickBuffer = await ac.decodeAudioData(arr);
-    } catch(e) {
-        // Fallback: use HTML Audio element
-        clickAudio = new Audio(CLICK_MP3);
-        clickAudio.volume = 0.5;
-    }
+    } catch(e) {}
 }
 
 function playClick() {
@@ -86,11 +80,6 @@ function playClick() {
             gain.connect(ac.destination);
             gain.gain.value = 0.6;
             src.start(0);
-        } else if (clickAudio) {
-            // Clone for rapid clicks
-            const clone = clickAudio.cloneNode();
-            clone.volume = 0.6;
-            clone.play().catch(()=>{});
         }
     } catch(e) {}
 }
@@ -112,14 +101,14 @@ function playTone(freq, type, dur, vol) {
 
 const SFX = {
     click:   () => playClick(),
-    nav:     () => { playClick(); },
-    success: () => { playTone(523, 'sine', 0.1, 0.07); setTimeout(()=>playTone(659,'sine',0.1,0.07),100); setTimeout(()=>playTone(784,'sine',0.15,0.07),200); },
-    error:   () => { playTone(200, 'sawtooth', 0.1, 0.08); setTimeout(()=>playTone(150,'sawtooth',0.1,0.08),100); },
+    nav:     () => playClick(),
+    success: () => { playTone(523,'sine',0.1,0.07); setTimeout(()=>playTone(659,'sine',0.1,0.07),100); setTimeout(()=>playTone(784,'sine',0.15,0.07),200); },
+    error:   () => { playTone(200,'sawtooth',0.1,0.08); setTimeout(()=>playTone(150,'sawtooth',0.1,0.08),100); },
     open:    () => playClick(),
     close:   () => playClick(),
 };
 
-// Load click sound on first user interaction
+// Load sound on first interaction (browser policy)
 let clickLoaded = false;
 document.addEventListener('click', e => {
     if (!clickLoaded) {
@@ -466,8 +455,22 @@ async function submitCreateAccount() {
     const lastname = $('ca-lastname').value.trim();
     const password = $('ca-password').value;
     const role = $('ca-role').value;
+    // Validasi
     if (!email || !username || !firstname || !password) {
         toast('Lengkapi semua field yang diperlukan', 'error'); return;
+    }
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+        toast('Format email tidak valid!', 'error'); return;
+    }
+    if (username.length < 3) {
+        toast('Username minimal 3 karakter', 'error'); return;
+    }
+    if (!/^[a-zA-Z0-9_.-]+$/.test(username)) {
+        toast('Username hanya boleh huruf, angka, titik, strip, underscore', 'error'); return;
+    }
+    if (password.length < 8) {
+        toast('Password minimal 8 karakter', 'error'); return;
     }
     const btn = $('btn-create-account');
     btn.disabled = true;
@@ -670,11 +673,17 @@ function renderUsersTable(users) {
     $('lu-table-body').innerHTML = filtered.map(u => `
     <tr>
         <td>${u.id}</td>
-        <td>${u.email}</td>
-        <td>${u.username}</td>
+        <td>
+          <span style="cursor:pointer" onclick="navigator.clipboard.writeText('${u.email}').then(()=>toast('Email disalin!','info'))">${u.email} 📋</span>
+        </td>
+        <td>
+          <span style="cursor:pointer" onclick="navigator.clipboard.writeText('${u.username}').then(()=>toast('Username disalin!','info'))">${u.username} 📋</span>
+        </td>
         <td><span class="badge ${u.root_admin ? 'badge-pink' : 'badge-cyan'}">${u.root_admin ? 'Admin' : 'Member'}</span></td>
-        <td>${isOwner ? `<button class="btn-sm btn-edit" onclick="openEditUser(${u.id},'${u.email}','${u.username}',${u.root_admin?1:0})">✏ Edit</button>
-            <button class="btn-sm btn-del" onclick="deleteUser(${u.id},'${u.username}')">🗑 Hapus</button>` : '-'}</td>
+        <td style="display:flex;gap:5px;flex-wrap:wrap">
+          ${isOwner ? `<button class="btn-sm btn-edit" onclick="openEditUser(${u.id},'${u.email}','${u.username}',${u.root_admin?1:0})">✏ Edit</button>
+            <button class="btn-sm btn-del" onclick="deleteUser(${u.id},'${u.username}')">🗑 Hapus</button>` : '-'}
+        </td>
     </tr>`).join('');
 }
 
@@ -727,26 +736,37 @@ async function loadListServers() {
     Progress.start();
     try {
         const res = await api('/pterodactyl/servers');
-        if (res.ok) { renderServersTable(res.data); Progress.done(); }
-        else { Progress.fail(); toast('Gagal memuat servers', 'error'); }
+        if (res.ok) {
+            cachedServers = res.data;
+            renderServersTable(res.data);
+            Progress.done();
+        } else { Progress.fail(); toast('Gagal memuat servers', 'error'); }
     } catch(e) { Progress.fail(); toast('Gagal terhubung', 'error'); }
 }
 
+let cachedServers = [];
+
 function renderServersTable(servers) {
     const isOwner = State.user && State.user.role === 1;
-    if (!servers.length) {
+    const search = ($('ls-search') ? $('ls-search').value : '').toLowerCase();
+    const filtered = search ? servers.filter(s => s.name.toLowerCase().includes(search) || (s.user||'').toLowerCase().includes(search)) : servers;
+    if (!filtered.length) {
         $('ls-table-body').innerHTML = `<tr><td colspan="4"><div class="empty-state"><div class="empty-icon">🖥</div><p>Tidak ada server ditemukan</p></div></td></tr>`;
         return;
     }
-    $('ls-table-body').innerHTML = servers.map(s => {
-        const status = s.status === 'running' ? 'badge-green' : (s.status === 'offline' ? 'badge-red' : 'badge-blue');
+    $('ls-table-body').innerHTML = filtered.map(s => {
+        const isSuspended = s.status === 'suspended';
+        const status = isSuspended ? 'badge-red' : s.status === 'running' ? 'badge-green' : s.status === 'offline' ? 'badge-red' : 'badge-blue';
+        const statusLabel = isSuspended ? '🔒 suspended' : (s.status || 'installing');
         return `<tr>
             <td><span style="cursor:pointer;color:var(--cyan)" onclick="openServerDetail('${s.identifier}')">${s.name}</span></td>
             <td>${s.user || s.owner || '-'}</td>
-            <td><span class="badge ${status}">${s.status || 'installing'}</span></td>
+            <td><span class="badge ${status}">${statusLabel}</span></td>
             <td style="display:flex;gap:5px;flex-wrap:wrap">
               <button class="btn-sm btn-edit" onclick="openServerDetail('${s.identifier}')">🔍 Detail</button>
               <button class="btn-sm" style="background:rgba(168,85,247,0.1);color:var(--purple);border:1px solid rgba(168,85,247,0.25)" onclick="reinstallServer('${s.identifier}','${s.name}')">🔄 Reinstall</button>
+              ${isOwner && !isSuspended ? `<button class="btn-sm" style="background:rgba(245,158,11,0.1);color:var(--yellow);border:1px solid rgba(245,158,11,0.25)" onclick="suspendServer('${s.identifier}','${s.name}')">🔒 Suspend</button>` : ''}
+              ${isOwner && isSuspended ? `<button class="btn-sm" style="background:rgba(34,197,94,0.1);color:var(--green);border:1px solid rgba(34,197,94,0.25)" onclick="unsuspendServer('${s.identifier}','${s.name}')">🔓 Unsuspend</button>` : ''}
               ${isOwner ? `<button class="btn-sm btn-del" onclick="deleteServer('${s.identifier}','${s.name}')">🗑 Hapus</button>` : ''}
             </td>
         </tr>`;
@@ -754,11 +774,29 @@ function renderServersTable(servers) {
 }
 
 function deleteServer(identifier, name) {
-    confirmDialog(`Hapus server "${name}" dari panel?`, async () => {
+    confirmDialog(`Hapus server "${name}" dari panel? Server akan DIHAPUS PERMANENT.`, async () => {
         Progress.start();
         const res = await api('/pterodactyl/servers/' + identifier, 'DELETE');
         if (res.ok) { Progress.done(); toast('Server dihapus!', 'success'); loadListServers(); }
         else { Progress.fail(); toast('Gagal: ' + (res.error||'Error'), 'error'); }
+    });
+}
+
+function suspendServer(identifier, name) {
+    confirmDialog(`Suspend server "${name}"? Server akan dibekukan, data tetap aman.`, async () => {
+        Progress.start();
+        const res = await api('/pterodactyl/suspend/' + identifier, 'POST');
+        if (res.ok) { Progress.done(); toast('Server disuspend!', 'success'); loadListServers(); }
+        else { Progress.fail(); toast('Gagal suspend: ' + (res.error||'Error'), 'error'); }
+    });
+}
+
+function unsuspendServer(identifier, name) {
+    confirmDialog(`Unsuspend server "${name}"? Server akan aktif kembali.`, async () => {
+        Progress.start();
+        const res = await api('/pterodactyl/unsuspend/' + identifier, 'POST');
+        if (res.ok) { Progress.done(); toast('Server diaktifkan kembali!', 'success'); loadListServers(); }
+        else { Progress.fail(); toast('Gagal unsuspend: ' + (res.error||'Error'), 'error'); }
     });
 }
 
@@ -899,6 +937,8 @@ async function clearActivityLog() {
 document.addEventListener('DOMContentLoaded', () => {
     const s = $('lu-search');
     if (s) s.addEventListener('input', debounce(() => renderUsersTable(cachedUsers), 200));
+    const ls = $('ls-search');
+    if (ls) ls.addEventListener('input', debounce(() => renderServersTable(cachedServers), 200));
 });
 
 // ========== WIB CLOCK ==========

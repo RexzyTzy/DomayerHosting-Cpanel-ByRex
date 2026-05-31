@@ -136,6 +136,7 @@ func autoMigrate() {
 			id              INT AUTO_INCREMENT PRIMARY KEY,
 			server_id       VARCHAR(64) NOT NULL UNIQUE,
 			server_name     VARCHAR(255) NOT NULL,
+			owner_id        INT NOT NULL DEFAULT 0,
 			owner_username  VARCHAR(64) NOT NULL DEFAULT \'\',
 			owner_email     VARCHAR(128) NOT NULL DEFAULT \'\',
 			owner_phone     VARCHAR(32) NOT NULL DEFAULT \'\',
@@ -143,6 +144,10 @@ func autoMigrate() {
 			egg_name        VARCHAR(128) NOT NULL DEFAULT \'\',
 			duration_days   INT NOT NULL DEFAULT 0,
 			notif_sent      TINYINT NOT NULL DEFAULT 0,
+			suspended       TINYINT NOT NULL DEFAULT 0,
+			suspend_notif   TINYINT NOT NULL DEFAULT 0,
+			pre_suspend_notif TINYINT NOT NULL DEFAULT 0,
+			suspended_at    DATETIME NULL,
 			expire_at       DATETIME NOT NULL,
 			created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
@@ -374,6 +379,11 @@ func main() {
 		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 		http.ServeFile(w, r, "script.js")
 	})
+	mux.HandleFunc("/click.mp3", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "audio/mpeg")
+		w.Header().Set("Cache-Control", "public, max-age=31536000")
+		http.ServeFile(w, r, "click.mp3")
+	})
 
 	// Health check
 	mux.HandleFunc("/health", handleHealth)
@@ -416,9 +426,16 @@ func main() {
 	mux.HandleFunc("/api/expirations", handleExpirations)
 	mux.HandleFunc("/api/expirations/renew", handleRenewServer)
 
+	// Suspend / Unsuspend
+	mux.HandleFunc("/api/pterodactyl/suspend/", handleSuspendServer)
+	mux.HandleFunc("/api/pterodactyl/unsuspend/", handleUnsuspendServer)
+
 	// Server Detail & Reinstall
 	mux.HandleFunc("/api/pterodactyl/server-detail/", handleServerDetail)
 	mux.HandleFunc("/api/pterodactyl/reinstall/", handleReinstallServer)
+
+	// Auto delete empty users
+	mux.HandleFunc("/api/pterodactyl/check-empty-users", handleCheckEmptyUsers)
 
 	// Catch-all -> serve SPA
 	mux.HandleFunc("/", serveIndex)
@@ -944,10 +961,10 @@ func handleCreateServer(w http.ResponseWriter, r *http.Request) {
 	if body.ExpiredDays > 0 && serverIdentifier != "" && db != nil {
 		expireAt := time.Now().In(wibLoc).Add(time.Duration(body.ExpiredDays) * 24 * time.Hour)
 		db.Exec(
-			`INSERT INTO server_expirations (server_id, server_name, owner_username, owner_email, owner_phone, owner_password, egg_name, duration_days, expire_at)
-			VALUES (?,?,?,?,?,?,?,?,?)
-			ON DUPLICATE KEY UPDATE expire_at=VALUES(expire_at), duration_days=VALUES(duration_days), notif_sent=0`,
-			serverIdentifier, body.Name, body.OwnerUsername, body.OwnerEmail,
+			`INSERT INTO server_expirations (server_id, server_name, owner_id, owner_username, owner_email, owner_phone, owner_password, egg_name, duration_days, expire_at)
+			VALUES (?,?,?,?,?,?,?,?,?,?)
+			ON DUPLICATE KEY UPDATE expire_at=VALUES(expire_at), duration_days=VALUES(duration_days), notif_sent=0, suspended=0, suspend_notif=0, pre_suspend_notif=0, suspended_at=NULL`,
+			serverIdentifier, body.Name, body.OwnerID, body.OwnerUsername, body.OwnerEmail,
 			body.Phone, body.OwnerPassword, body.EggName, body.ExpiredDays,
 			expireAt.Format("2006-01-02 15:04:05"),
 		)
@@ -966,33 +983,99 @@ func handleCreateServer(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, map[string]interface{}{"ok": true})
 }
 
+// pteroGetServerInternalID fetches the internal integer ID from an identifier string
+func pteroGetServerInternalID(identifier string) (int, string, error) {
+	data, code, err := pteroRequest("GET", "/api/application/servers?per_page=100", nil)
+	if err != nil || code != 200 {
+		return 0, "", fmt.Errorf("failed to fetch servers: %d", code)
+	}
+	var res struct {
+		Data []struct {
+			Attributes struct {
+				ID         int    `json:"id"`
+				Identifier string `json:"identifier"`
+				Name       string `json:"name"`
+			}
+		}
+	}
+	json.Unmarshal(data, &res)
+	for _, d := range res.Data {
+		if d.Attributes.Identifier == identifier {
+			return d.Attributes.ID, d.Attributes.Name, nil
+		}
+	}
+	return 0, "", fmt.Errorf("server not found: %s", identifier)
+}
+
+// pteroDeleteServer deletes by internal integer ID
+func pteroDeleteServer(internalID int) error {
+	idStr := strconv.Itoa(internalID)
+	_, code, err := pteroRequest("DELETE", "/api/application/servers/"+idStr+"/force", nil)
+	if err == nil && (code == 200 || code == 204) {
+		return nil
+	}
+	_, code2, err2 := pteroRequest("DELETE", "/api/application/servers/"+idStr, nil)
+	if err2 == nil && (code2 == 200 || code2 == 204) {
+		return nil
+	}
+	return fmt.Errorf("delete failed: force=%d normal=%d", code, code2)
+}
+
+// pteroSuspendServer suspends by internal integer ID
+func pteroSuspendServer(internalID int) error {
+	idStr := strconv.Itoa(internalID)
+	_, code, err := pteroRequest("POST", "/api/application/servers/"+idStr+"/suspend", nil)
+	if err != nil || (code != 200 && code != 202 && code != 204) {
+		return fmt.Errorf("suspend failed: %d", code)
+	}
+	return nil
+}
+
+// pteroUnsuspendServer unsuspends by internal integer ID
+func pteroUnsuspendServer(internalID int) error {
+	idStr := strconv.Itoa(internalID)
+	_, code, err := pteroRequest("POST", "/api/application/servers/"+idStr+"/unsuspend", nil)
+	if err != nil || (code != 200 && code != 202 && code != 204) {
+		return fmt.Errorf("unsuspend failed: %d", code)
+	}
+	return nil
+}
+
 func handlePteroServerByID(w http.ResponseWriter, r *http.Request) {
 	u := requireOwner(w, r)
 	if u == nil {
 		return
 	}
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/pterodactyl/servers/"), "/")
-	id := parts[0]
-	if id == "" {
-		errResp(w, 400, "Missing server ID")
+	identifier := parts[0]
+	if identifier == "" {
+		errResp(w, 400, "Missing server identifier")
 		return
 	}
-	if r.Method != http.MethodDelete {
-		errResp(w, 405, "Method not allowed")
+
+	// Get internal ID
+	internalID, serverName, err := pteroGetServerInternalID(identifier)
+	if err != nil {
+		errResp(w, 404, "Server tidak ditemukan: "+err.Error())
 		return
 	}
-	// Force delete
-	_, code, err := pteroRequest("DELETE", "/api/application/servers/"+id+"/force", nil)
-	if err != nil || (code != 200 && code != 204) {
-		// Try normal delete
-		_, code2, err2 := pteroRequest("DELETE", "/api/application/servers/"+id, nil)
-		if err2 != nil || (code2 != 200 && code2 != 204) {
-			errResp(w, 500, "Gagal menghapus server")
+
+	switch r.Method {
+	case http.MethodDelete:
+		if err := pteroDeleteServer(internalID); err != nil {
+			errResp(w, 500, "Gagal menghapus server: "+err.Error())
 			return
 		}
+		// Clean up expiry table too
+		if db != nil {
+			db.Exec("DELETE FROM server_expirations WHERE server_id=?", identifier)
+		}
+		writeLog(u.Username, u.Role, fmt.Sprintf("Hapus server: %s (%s)", serverName, identifier))
+		jsonResp(w, map[string]interface{}{"ok": true})
+
+	default:
+		errResp(w, 405, "Method not allowed")
 	}
-	writeLog(u.Username, u.Role, fmt.Sprintf("Hapus server ID: %s", id))
-	jsonResp(w, map[string]interface{}{"ok": true})
 }
 
 // ============================================================
@@ -1322,136 +1405,209 @@ func startExpiryChecker() {
 	log.Println("⏰ Auto-expiry checker started")
 	for {
 		time.Sleep(5 * time.Minute)
-		checkAndDeleteExpired()
+		checkPreSuspendNotif()
+		checkAndSuspendExpired()
+		checkAndDeleteSuspended()
 		checkAndSendExpiryNotif()
 	}
 }
 
-// notifThreshold returns how many hours before expired a notification should be sent
 func notifThreshold(durationDays int) int {
 	switch durationDays {
 	case 1:
-		return 4   // 4 jam sebelum expired
+		return 4
 	case 3:
-		return 24  // 1 hari sebelum expired
+		return 24
 	default:
-		return 72  // 3 hari sebelum expired (7,14,30)
+		return 72
 	}
+}
+
+// Notif 4 jam sebelum suspend
+func checkPreSuspendNotif() {
+	if db == nil { return }
+	now := time.Now().In(wibLoc)
+	rows, err := db.Query(`+"`"+`SELECT server_id, server_name, owner_username, owner_phone, expire_at
+		FROM server_expirations WHERE pre_suspend_notif=0 AND suspended=0 AND expire_at > ?`+"`"+`,
+		now.Format("2006-01-02 15:04:05"))
+	if err != nil { return }
+	defer rows.Close()
+	type ent struct{ ID, Name, Owner, Phone string; ExpireAt time.Time }
+	var entries []ent
+	for rows.Next() {
+		var x ent
+		rows.Scan(&x.ID, &x.Name, &x.Owner, &x.Phone, &x.ExpireAt)
+		entries = append(entries, x)
+	}
+	rows.Close()
+	for _, x := range entries {
+		if x.ExpireAt.Sub(now) <= 4*time.Hour {
+			if x.Phone != "" {
+				h := int(x.ExpireAt.Sub(now).Hours())
+				if h < 1 { h = 1 }
+				msg := fmt.Sprintf("⚠️ *PERINGATAN - SERVER AKAN DISUSPEND*\n\n_Halo %s!_\n\n🖥 Server *%s* akan *disuspend dalam %d jam* karena masa aktif habis.\n\n_Segera hubungi owner untuk perpanjang!_\n_Link Panel: %s_",
+					x.Owner, x.Name, h, PanelLink)
+				sendWhatsApp(x.Phone, msg)
+			}
+			db.Exec("UPDATE server_expirations SET pre_suspend_notif=1 WHERE server_id=?", x.ID)
+			writeLog("system", 1, fmt.Sprintf("Notif pre-suspend: %s", x.Name))
+		}
+	}
+}
+
+// Suspend server yang sudah expired
+func checkAndSuspendExpired() {
+	if db == nil { return }
+	now := time.Now().In(wibLoc).Format("2006-01-02 15:04:05")
+	rows, err := db.Query(`+"`"+`SELECT server_id, server_name, owner_username, owner_phone
+		FROM server_expirations WHERE expire_at <= ? AND suspended=0`+"`"+`, now)
+	if err != nil { return }
+	defer rows.Close()
+	type ent struct{ ID, Name, Owner, Phone string }
+	var entries []ent
+	for rows.Next() {
+		var x ent
+		rows.Scan(&x.ID, &x.Name, &x.Owner, &x.Phone)
+		entries = append(entries, x)
+	}
+	rows.Close()
+	for _, x := range entries {
+		internalID, _, err := pteroGetServerInternalID(x.ID)
+		if err != nil { log.Printf("⚠ Suspend: cannot find server %s: %v", x.ID, err); continue }
+		if err := pteroSuspendServer(internalID); err != nil { log.Printf("⚠ Suspend failed %s: %v", x.Name, err); continue }
+		suspAt := time.Now().In(wibLoc)
+		db.Exec("UPDATE server_expirations SET suspended=1, suspended_at=? WHERE server_id=?",
+			suspAt.Format("2006-01-02 15:04:05"), x.ID)
+		if x.Phone != "" {
+			msg := fmt.Sprintf("🔒 *SERVER DISUSPEND*\n\n_Halo %s, server kamu dibekukan karena belum perpanjang!_\n\n🖥 *Server* : %s\n⏰ *Disuspend* : %s\n\n_Kamu punya *3 hari* untuk perpanjang sebelum server *DIHAPUS PERMANENT*._\n\n_Hubungi owner sekarang!_\n_Link Panel: %s_",
+				x.Owner, x.Name, suspAt.Format("02/01/2006 15:04"), PanelLink)
+			sendWhatsApp(x.Phone, msg)
+		}
+		writeLog("system", 1, fmt.Sprintf("Auto-suspend: %s", x.Name))
+		log.Printf("🔒 Suspended: %s", x.Name)
+	}
+}
+
+// Delete server yang sudah suspend lebih dari 3 hari
+func checkAndDeleteSuspended() {
+	if db == nil { return }
+	deadline := time.Now().In(wibLoc).Add(-3 * 24 * time.Hour).Format("2006-01-02 15:04:05")
+	rows, err := db.Query(`+"`"+`SELECT server_id, server_name, owner_id, owner_username, owner_phone, owner_email
+		FROM server_expirations WHERE suspended=1 AND suspended_at <= ?`+"`"+`, deadline)
+	if err != nil { return }
+	defer rows.Close()
+	type ent struct{ ID, Name string; OwnerID int; Owner, Phone, Email string }
+	var entries []ent
+	for rows.Next() {
+		var x ent
+		rows.Scan(&x.ID, &x.Name, &x.OwnerID, &x.Owner, &x.Phone, &x.Email)
+		entries = append(entries, x)
+	}
+	rows.Close()
+	for _, x := range entries {
+		internalID, _, err := pteroGetServerInternalID(x.ID)
+		if err == nil {
+			pteroDeleteServer(internalID)
+		}
+		db.Exec("DELETE FROM server_expirations WHERE server_id=?", x.ID)
+		if x.Phone != "" {
+			msg := fmt.Sprintf("❌ *SERVER DIHAPUS PERMANENT*\n\n_Halo %s, server kamu dihapus karena tidak perpanjang dalam 3 hari setelah suspend._\n\n🖥 *Server* : %s\n\n_Data tidak dapat dipulihkan._\n_Hubungi owner jika ingin order baru._\n_Link Panel: %s_",
+				x.Owner, x.Name, PanelLink)
+			sendWhatsApp(x.Phone, msg)
+		}
+		writeLog("system", 1, fmt.Sprintf("Auto-delete (3 hari suspend): %s", x.Name))
+		log.Printf("🗑 Permanently deleted: %s", x.Name)
+		if x.OwnerID > 0 {
+			go checkAndDeleteEmptyUser(x.OwnerID, x.Owner, x.Phone, x.Email)
+		}
+	}
+}
+
+func checkAndDeleteEmptyUser(ownerID int, ownerUsername, phone, email string) {
+	time.Sleep(10 * time.Second)
+	idStr := strconv.Itoa(ownerID)
+	data, code, err := pteroRequest("GET", "/api/application/users/"+idStr+"?include=servers", nil)
+	if err != nil || code != 200 { return }
+	var res struct {
+		Attributes struct {
+			Relationships struct {
+				Servers struct{ Data []interface{} }
+			}
+		}
+	}
+	json.Unmarshal(data, &res)
+	if len(res.Attributes.Relationships.Servers.Data) == 0 {
+		pteroRequest("DELETE", "/api/application/users/"+idStr, nil)
+		if phone != "" {
+			msg := fmt.Sprintf("🗑️ *AKUN PANEL DIHAPUS*\n\n_Halo %s, akun panel kamu dihapus karena tidak memiliki server aktif._\n\n_Email: %s_\n\n_Hubungi owner jika ingin order baru._\n_Link Panel: %s_",
+				ownerUsername, email, PanelLink)
+			sendWhatsApp(phone, msg)
+		}
+		writeLog("system", 1, fmt.Sprintf("Auto-delete user tanpa server: %s", ownerUsername))
+		log.Printf("👤 User deleted (no servers): %s", ownerUsername)
+	}
+}
+
+func handleCheckEmptyUsers(w http.ResponseWriter, r *http.Request) {
+	u := requireOwner(w, r)
+	if u == nil { return }
+	go func() {
+		data, code, err := pteroRequest("GET", "/api/application/users?per_page=100&include=servers", nil)
+		if err != nil || code != 200 { return }
+		var res struct {
+			Data []struct {
+				Attributes struct {
+					ID       int    `+"`"+`json:"id"`+"`"+`
+					Username string `+"`"+`json:"username"`+"`"+`
+					Email    string `+"`"+`json:"email"`+"`"+`
+					Relationships struct {
+						Servers struct{ Data []interface{} }
+					}
+				}
+			}
+		}
+		json.Unmarshal(data, &res)
+		for _, d := range res.Data {
+			if len(d.Attributes.Relationships.Servers.Data) == 0 {
+				checkAndDeleteEmptyUser(d.Attributes.ID, d.Attributes.Username, "", d.Attributes.Email)
+			}
+		}
+	}()
+	jsonResp(w, map[string]interface{}{"ok": true, "message": "Checking empty users in background"})
 }
 
 func checkAndSendExpiryNotif() {
-	if db == nil {
-		return
-	}
-	rows, err := db.Query(`SELECT server_id, server_name, owner_username, owner_email, owner_phone, owner_password, egg_name, duration_days, expire_at
-		FROM server_expirations WHERE notif_sent=0 AND expire_at > NOW()`)
-	if err != nil {
-		return
-	}
+	if db == nil { return }
+	rows, err := db.Query(`+"`"+`SELECT server_id, server_name, owner_username, owner_phone, duration_days, expire_at
+		FROM server_expirations WHERE notif_sent=0 AND suspended=0 AND expire_at > NOW()`+"`"+`)
+	if err != nil { return }
 	defer rows.Close()
-
-	type notifEntry struct {
-		ID       string
-		Name     string
-		Owner    string
-		Email    string
-		Phone    string
-		Password string
-		Egg      string
-		Duration int
-		ExpireAt time.Time
-	}
-	var entries []notifEntry
+	type ent struct{ ID, Name, Owner, Phone string; Duration int; ExpireAt time.Time }
+	var entries []ent
 	for rows.Next() {
-		var e notifEntry
-		rows.Scan(&e.ID, &e.Name, &e.Owner, &e.Email, &e.Phone, &e.Password, &e.Egg, &e.Duration, &e.ExpireAt)
-		entries = append(entries, e)
+		var x ent
+		rows.Scan(&x.ID, &x.Name, &x.Owner, &x.Phone, &x.Duration, &x.ExpireAt)
+		entries = append(entries, x)
 	}
 	rows.Close()
-
 	now := time.Now().In(wibLoc)
-	for _, e := range entries {
-		threshold := time.Duration(notifThreshold(e.Duration)) * time.Hour
-		timeLeft := e.ExpireAt.Sub(now)
-		if timeLeft <= threshold {
-			// Send WA notif
-			if e.Phone != "" {
-				msg := buildWAExpiredNotif(e.Name, e.Owner, e.ExpireAt.Format("02/01/2006 15:04"), timeLeft)
-				sendWhatsApp(e.Phone, msg)
+	for _, x := range entries {
+		timeLeft := x.ExpireAt.Sub(now)
+		if timeLeft <= time.Duration(notifThreshold(x.Duration))*time.Hour {
+			if x.Phone != "" {
+				h := int(timeLeft.Hours())
+				var ts string
+				if h < 24 { ts = fmt.Sprintf("%d jam lagi", h) } else { ts = fmt.Sprintf("%d hari lagi", h/24) }
+				msg := fmt.Sprintf("⚠️ *PERINGATAN EXPIRED HOSTING*\n\n_Halo %s, server kamu akan expired!_\n\n🖥 *Server* : %s\n⏰ *Expired* : %s\n⏳ *Sisa* : %s\n\n_Jika tidak perpanjang → server DISUSPEND → lalu DIHAPUS 3 hari kemudian._\n_Segera hubungi owner!_\n_Link Panel: %s_",
+					x.Owner, x.Name, x.ExpireAt.In(wibLoc).Format("02/01/2006 15:04"), ts, PanelLink)
+				sendWhatsApp(x.Phone, msg)
 			}
-			db.Exec("UPDATE server_expirations SET notif_sent=1 WHERE server_id=?", e.ID)
-			writeLog("system", 1, fmt.Sprintf("Kirim notif expired ke %s: server %s expired %s", e.Phone, e.Name, e.ExpireAt.Format("02/01/2006 15:04")))
-			log.Printf("📱 Notif expired sent: %s → %s", e.Name, e.Phone)
+			db.Exec("UPDATE server_expirations SET notif_sent=1 WHERE server_id=?", x.ID)
+			writeLog("system", 1, fmt.Sprintf("Notif expired: %s", x.Name))
 		}
 	}
 }
 
-func buildWAExpiredNotif(serverName, ownerUsername, expireDate string, timeLeft time.Duration) string {
-	var timeStr string
-	hours := int(timeLeft.Hours())
-	if hours < 24 {
-		timeStr = fmt.Sprintf("%d jam lagi", hours)
-	} else {
-		timeStr = fmt.Sprintf("%d hari lagi", int(timeLeft.Hours()/24))
-	}
-	return fmt.Sprintf(`⚠️ *PERINGATAN EXPIRED HOSTING* ⚠️
-
-_Halo %s, server kamu akan segera expired!_
-
-🖥 *Server* : %s
-⏰ *Expired* : %s
-⏳ *Sisa* : %s
-
-_Segera hubungi owner untuk perpanjang hosting agar server tidak terhapus otomatis._
-
-_Link Panel_ : %s`,
-		ownerUsername, serverName, expireDate, timeStr, PanelLink)
-}
-
-func checkAndDeleteExpired() {
-	if db == nil {
-		return
-	}
-	now := time.Now().In(wibLoc).Format("2006-01-02 15:04:05")
-	rows, err := db.Query(`SELECT server_id, server_name, owner_username, owner_phone
-		FROM server_expirations WHERE expire_at <= ?`, now)
-	if err != nil {
-		log.Printf("⚠ Expiry check error: %v", err)
-		return
-	}
-	defer rows.Close()
-
-	type expEntry struct {
-		ID    string
-		Name  string
-		Owner string
-		Phone string
-	}
-	var expired []expEntry
-	for rows.Next() {
-		var e expEntry
-		rows.Scan(&e.ID, &e.Name, &e.Owner, &e.Phone)
-		expired = append(expired, e)
-	}
-	rows.Close()
-
-	for _, e := range expired {
-		log.Printf("🗑 Auto-deleting expired server: %s (%s)", e.Name, e.ID)
-		_, code, err := pteroRequest("DELETE", "/api/application/servers/"+e.ID+"/force", nil)
-		if err != nil || (code != 200 && code != 204) {
-			pteroRequest("DELETE", "/api/application/servers/"+e.ID, nil)
-		}
-		// Notify buyer server deleted
-		if e.Phone != "" {
-			msg := fmt.Sprintf("❌ *SERVER DIHAPUS*\n\n_Server *%s* milik %s telah dihapus karena masa aktif habis._\n\n_Hubungi owner jika ingin order ulang._\n_Link Panel: %s_",
-				e.Name, e.Owner, PanelLink)
-			sendWhatsApp(e.Phone, msg)
-		}
-		db.Exec("DELETE FROM server_expirations WHERE server_id=?", e.ID)
-		writeLog("system", 1, fmt.Sprintf("Auto-delete server expired: %s (owner: %s)", e.Name, e.Owner))
-		log.Printf("✅ Expired server deleted: %s", e.Name)
-	}
-}
 
 func handleExpirations(w http.ResponseWriter, r *http.Request) {
 	u := requireAuth(w, r)
@@ -1485,6 +1641,43 @@ func handleExpirations(w http.ResponseWriter, r *http.Request) {
 		out = append(out, e)
 	}
 	jsonResp(w, map[string]interface{}{"ok": true, "data": out})
+}
+
+// ============================================================
+// SUSPEND / UNSUSPEND HANDLERS
+// ============================================================
+func handleSuspendServer(w http.ResponseWriter, r *http.Request) {
+	u := requireOwner(w, r)
+	if u == nil { return }
+	if r.Method != http.MethodPost { errResp(w, 405, "Method not allowed"); return }
+	identifier := strings.TrimPrefix(r.URL.Path, "/api/pterodactyl/suspend/")
+	identifier = strings.Split(identifier, "/")[0]
+	internalID, serverName, err := pteroGetServerInternalID(identifier)
+	if err != nil { errResp(w, 404, "Server tidak ditemukan"); return }
+	if err := pteroSuspendServer(internalID); err != nil {
+		errResp(w, 500, "Gagal suspend: "+err.Error()); return
+	}
+	writeLog(u.Username, u.Role, fmt.Sprintf("Suspend server: %s", serverName))
+	jsonResp(w, map[string]interface{}{"ok": true})
+}
+
+func handleUnsuspendServer(w http.ResponseWriter, r *http.Request) {
+	u := requireOwner(w, r)
+	if u == nil { return }
+	if r.Method != http.MethodPost { errResp(w, 405, "Method not allowed"); return }
+	identifier := strings.TrimPrefix(r.URL.Path, "/api/pterodactyl/unsuspend/")
+	identifier = strings.Split(identifier, "/")[0]
+	internalID, serverName, err := pteroGetServerInternalID(identifier)
+	if err != nil { errResp(w, 404, "Server tidak ditemukan"); return }
+	if err := pteroUnsuspendServer(internalID); err != nil {
+		errResp(w, 500, "Gagal unsuspend: "+err.Error()); return
+	}
+	// Reset suspended flag in DB if exists
+	if db != nil {
+		db.Exec("UPDATE server_expirations SET suspended=0, suspended_at=NULL WHERE server_id=?", identifier)
+	}
+	writeLog(u.Username, u.Role, fmt.Sprintf("Unsuspend server: %s", serverName))
+	jsonResp(w, map[string]interface{}{"ok": true})
 }
 
 // ============================================================
@@ -2237,7 +2430,13 @@ func htmlPage() string {
     <div id="page-listServers" class="page">
       <div class="section-header">
         <h2><div class="h-icon">🖥</div> List Servers Pterodactyl</h2>
-        <button class="btn btn-secondary" onclick="loadListServers()">🔄 Refresh</button>
+        <div style="display:flex;gap:10px;align-items:center">
+          <div class="search-wrap">
+            <span class="search-icon">🔍</span>
+            <input id="ls-search" class="search-bar" placeholder="Cari server...">
+          </div>
+          <button class="btn btn-secondary" onclick="loadListServers()">🔄 Refresh</button>
+        </div>
       </div>
       <div class="card">
         <div class="table-wrap">
